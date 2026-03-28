@@ -4,7 +4,702 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>XMEME | Precision Escrow Terminal v2.0</title>
+    <link href="<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XMEME | Precision Escrow Terminal v2.0</title>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/xrpl@3.1.0/build/xrpl-latest-min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hash-wasm@4"></script>
+    <style>
+        :root{--neon:#00FF00;--cyan:#00FFFF;--bg:#000;--panel:#0a0a0a;--warn:#ff0000;--dim:#004400;--txt:#777;--glow:0 0 10px rgba(0,255,0,0.15)}
+        *{box-sizing:border-box;margin:0}
+        body{background:var(--bg);color:var(--neon);font-family:'Share Tech Mono',monospace;padding:12px;font-size:13px;min-height:100vh}
+        .hdr{text-align:center;margin-bottom:18px;position:relative;z-index:1}
+        .hdr h1{font-family:'Orbitron',monospace;font-weight:900;font-size:clamp(1em,3.5vw,1.7em);text-shadow:0 0 20px rgba(0,255,0,0.4);letter-spacing:3px}
+        .hdr .sub{font-size:.72em;color:var(--txt);margin-top:4px;letter-spacing:2px}
+        .ntog{display:inline-flex;border:1px solid #222;overflow:hidden;margin-top:8px}
+        .ntog button{padding:5px 12px;font-size:.7em;border:none;border-right:1px solid #222;background:#111;color:#555;cursor:pointer;font-family:inherit;text-transform:uppercase}
+        .ntog button:last-child{border-right:none}
+        .ntog button.on{background:var(--dim);color:var(--neon)}
+        .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:1200px;margin:auto;position:relative;z-index:1}
+        @media(max-width:768px){.grid{grid-template-columns:1fr}.full{grid-column:1!important}}
+        .panel{border:1px solid var(--neon);background:var(--panel);padding:14px;box-shadow:var(--glow);transition:box-shadow .3s}
+        .panel:hover{box-shadow:0 0 15px rgba(0,255,0,0.25)}
+        .full{grid-column:1/span 2}
+        h2{font-family:'Orbitron',monospace;margin:0 0 10px;font-size:.8em;font-weight:700;border-bottom:1px solid #1a1a1a;padding-bottom:6px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px}
+        .tag{font-family:'Orbitron',monospace;background:var(--neon);color:#000;padding:2px 5px;font-size:.55em;font-weight:700;letter-spacing:1px;white-space:nowrap}
+        .tag-w{background:#ffcc00}.tag-r{background:var(--warn);color:#fff}.tag-g{background:#333;color:#888}.tag-c{background:var(--cyan);color:#000}
+        input,select{background:#050505;color:var(--neon);border:1px solid #2a2a2a;width:100%;padding:9px;margin:3px 0;outline:none;font-family:inherit;font-size:12px}
+        input:focus,select:focus{border-color:var(--neon)}input::placeholder{color:#00aa00}
+        select{color:var(--neon)}
+        select option{background:#0a0a0a;color:var(--neon)}
+        label{font-size:.7em;color:#00aa00;display:block;margin-top:5px}
+        button{background:#0a0a0a;color:var(--neon);border:1px solid var(--dim);padding:10px;width:100%;cursor:pointer;font-weight:bold;font-family:inherit;text-transform:uppercase;font-size:12px;letter-spacing:1px;transition:all .2s;margin-top:3px}
+        button:hover:not(:disabled){background:var(--neon);color:#000}
+        button:disabled{border-color:#1a1a1a;background:#060606;color:#333;cursor:not-allowed}
+        .sbox{height:80px;overflow-y:auto;background:#030303;border:1px solid #111;padding:7px;font-size:.75em;color:var(--txt);white-space:pre-wrap;word-break:break-all;margin-top:6px}
+        .dur-btns{display:flex;gap:4px;flex-wrap:wrap;margin:6px 0}
+        .dur-btns button{width:auto;padding:6px 10px;font-size:.7em;flex:1;min-width:60px}
+        .dur-btns button.sel{background:var(--neon);color:#000;border-color:var(--neon)}
+        .esc-card{border:1px solid #222;background:#050505;padding:10px;margin:6px 0;position:relative;cursor:pointer;transition:border-color .2s}
+        .esc-card:hover{border-color:var(--neon)!important}
+        .esc-card:active{background:#0a0a0a}
+        .esc-card .amt{font-family:'Orbitron',monospace;font-size:1.1em;color:var(--neon)}
+        .esc-card .cd{font-size:.85em;color:var(--cyan);margin:4px 0}
+        .esc-card .st{font-size:.65em;padding:2px 6px;display:inline-block;margin-top:4px}
+        /* [4] Updated status classes */
+        .st-locked{background:#220;color:#ffcc00;border:1px solid #ffcc00}
+        .st-ready{background:#020;color:var(--neon);border:1px solid var(--neon)}
+        .st-swept{background:#101830;color:var(--cyan);border:1px solid var(--cyan)}
+        .st-deleted{background:#111;color:#555;border:1px solid #333}
+        .st-cancelled{background:#111;color:#555;border:1px solid #333}
+        #overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.88);z-index:999;align-items:center;justify-content:center;flex-direction:column}
+        .spin{width:44px;height:44px;border:3px solid #111;border-top:3px solid var(--neon);border-radius:50%;animation:sp .7s linear infinite;margin-bottom:16px}
+        @keyframes sp{to{transform:rotate(360deg)}}
+        #overlay-txt{font-family:'Orbitron',monospace;font-size:.8em;color:var(--neon);text-shadow:0 0 10px rgba(0,255,0,.4);letter-spacing:2px;text-align:center;padding:0 20px}
+        #err-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.95);z-index:1000;align-items:center;justify-content:center;padding:20px}
+        .err-card{border:2px solid var(--warn);padding:25px;background:#0a0000;max-width:450px;width:100%;text-align:center;box-shadow:0 0 30px rgba(255,0,0,.15)}
+        .err-card h3{font-family:'Orbitron',monospace;color:var(--warn);margin-bottom:10px;font-size:.9em}
+        .ftr{text-align:center;padding:18px 0 8px;position:relative;z-index:1}
+        .ftr span{font-family:'Orbitron',monospace;font-size:.65em;color:var(--neon);text-shadow:0 0 12px rgba(0,255,0,.4);letter-spacing:3px}
+        #lib-st{text-align:center;padding:6px;font-size:.75em;margin-bottom:10px}
+        .succ{color:var(--neon)}.err{color:var(--warn)}.inf{color:var(--cyan)}
+        ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#030303}::-webkit-scrollbar-thumb{background:var(--dim)}
+        .hidden{display:none!important}
+
+        /* XRPMAN STUDIOS BANNER */
+        .studio-banner{text-align:center;font-family:'Orbitron',monospace;font-weight:900;font-size:clamp(.6em,2vw,.85em);letter-spacing:6px;color:var(--neon);padding:10px 20px;margin-bottom:4px;position:relative;z-index:2;text-shadow:0 0 20px rgba(0,255,0,0.6),0 0 40px rgba(0,255,0,0.3),0 0 80px rgba(0,255,0,0.15);animation:bannerPulse 3s ease-in-out infinite}
+        .studio-banner::before,.studio-banner::after{content:'';position:absolute;top:50%;height:1px;width:60px;background:linear-gradient(90deg,transparent,var(--neon),transparent)}
+        .studio-banner::before{left:calc(50% - 200px)}
+        .studio-banner::after{right:calc(50% - 200px)}
+        @keyframes bannerPulse{0%,100%{opacity:1;text-shadow:0 0 20px rgba(0,255,0,0.6),0 0 40px rgba(0,255,0,0.3)}50%{opacity:.85;text-shadow:0 0 30px rgba(0,255,0,0.8),0 0 60px rgba(0,255,0,0.4)}}
+
+        /* VAULT GRID BACKGROUND */
+        .vault-grid{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;overflow:hidden}
+        .vault-grid canvas{width:100%;height:100%}
+
+        /* DASHBOARD TABS */
+        .dtabs{display:flex;gap:0;border:1px solid #222;overflow:hidden;margin-bottom:8px}
+        .dtabs button{flex:1;padding:7px;font-size:.7em;border:none;border-right:1px solid #222;background:#080808;color:#555;cursor:pointer;font-family:inherit;text-transform:uppercase;transition:all .15s}
+        .dtabs button:last-child{border-right:none}
+        .dtabs button.on{background:var(--dim);color:var(--neon)}
+
+        /* ESCROW DETAIL MODAL */
+        #esc-detail{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.92);z-index:998;align-items:center;justify-content:center;padding:15px;overflow-y:auto}
+        .detail-card{border:1px solid var(--neon);background:#0a0a0a;padding:18px;max-width:550px;width:100%;box-shadow:0 0 30px rgba(0,255,0,.15);position:relative;max-height:90vh;overflow-y:auto}
+        .detail-card h3{font-family:'Orbitron',monospace;font-size:.85em;color:var(--neon);margin-bottom:10px}
+        .detail-row{display:flex;justify-content:space-between;padding:4px 0;font-size:.78em;border-bottom:1px solid #111}
+        .detail-row .lbl{color:#00aa00}.detail-row .val{color:var(--neon);text-align:right;word-break:break-all;max-width:60%}
+        .detail-live{border:1px solid #222;background:#030303;padding:8px;margin:8px 0;min-height:30px;font-size:.75em}
+
+        /* [1] CONFIRMATION MODAL */
+        #conf-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.95);z-index:1001;align-items:center;justify-content:center;padding:15px;overflow-y:auto}
+        .conf-card{border:2px solid #ffcc00;background:#0a0800;padding:20px;max-width:520px;width:100%;box-shadow:0 0 30px rgba(255,204,0,.15);max-height:90vh;overflow-y:auto}
+        .conf-card h3{font-family:'Orbitron',monospace;font-size:.85em;color:#ffcc00;margin-bottom:12px;border-bottom:1px solid #332200;padding-bottom:8px}
+        .conf-row{display:flex;justify-content:space-between;padding:5px 0;font-size:.78em;border-bottom:1px solid #1a1200}
+        .conf-row .cl{color:#aa8800}.conf-row .cv{color:#ffcc00;text-align:right;word-break:break-all;max-width:62%}
+        .conf-warn{background:#110800;border:1px solid #ff6600;padding:8px;margin:10px 0;font-size:.75em;color:#ff8800;line-height:1.5}
+        .conf-btns{display:flex;gap:8px;margin-top:14px}
+        .conf-btns button{flex:1}
+        .conf-cancel{border-color:#333;color:#555;background:#111}
+        .conf-confirm{border-color:#ffcc00;color:#000;background:#ffcc00;font-weight:bold}
+        .conf-confirm:hover{background:#ffd700;border-color:#ffd700}
+
+        /* [3] RECEIPT PANEL */
+        .receipt-panel{border:1px solid var(--neon);background:#010a01;padding:12px;margin-top:8px;font-size:.75em;line-height:1.6}
+        .receipt-panel .r-title{font-family:'Orbitron',monospace;font-size:.8em;color:var(--neon);margin-bottom:8px;border-bottom:1px solid #1a1a1a;padding-bottom:5px}
+        .receipt-row{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #0a0a0a}
+        .receipt-row .rl{color:#00aa00}.receipt-row .rv{color:var(--neon);word-break:break-all;text-align:right;max-width:65%}
+        .receipt-hash{font-size:.7em;color:var(--cyan);word-break:break-all;padding:3px 0;cursor:pointer}
+        .receipt-hash:hover{color:var(--neon)}
+
+        /* [5] ELIGIBILITY CHECKLIST */
+        .elig-list{border:1px solid #222;background:#030303;padding:10px;margin:8px 0;font-size:.75em}
+        .elig-list .el-title{font-family:'Orbitron',monospace;font-size:.7em;color:#555;margin-bottom:6px}
+        .elig-item{display:flex;align-items:center;gap:8px;padding:3px 0;border-bottom:1px solid #0d0d0d}
+        .elig-item:last-child{border-bottom:none}
+        .elig-ok{color:var(--neon)}.elig-no{color:var(--warn)}.elig-unk{color:#555}
+
+        /* [7] Password input wrapper */
+        .pw-wrap{position:relative}
+        .pw-wrap input{padding-right:38px}
+        .pw-toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);cursor:pointer;color:#555;font-size:.8em;user-select:none;background:none;border:none;width:auto;padding:0;margin:0}
+        .pw-toggle:hover{color:var(--neon);background:none}
+
+        /* [10] Reserve explainer */
+        .reserve-note{border:1px solid #1a2a1a;background:#010801;padding:8px;font-size:.7em;color:#558855;line-height:1.6;margin-top:6px}
+        .reserve-note b{color:#00aa00}
+
+        /* [3] Receipt warning note */
+        .receipt-note{color:#ffcc00;font-size:.7em;margin-top:6px;padding:4px 0;border-top:1px solid #221100}
+
+        /* [1.3] DELETE typed confirm */
+    </style>
+</head>
+<body>
+
+<!-- VAULT GRID BACKGROUND -->
+<div class="vault-grid"><canvas id="vaultCanvas"></canvas></div>
+
+<!-- LOADING OVERLAY -->
+<div id="overlay"><div class="spin"></div><div id="overlay-txt">PROCESSING...</div></div>
+
+<!-- ERROR OVERLAY -->
+<div id="err-overlay">
+    <div class="err-card">
+        <h3>[SYSTEM FAULT]</h3>
+        <p id="err-msg" style="color:#ccc;font-size:.85em;line-height:1.5;text-transform:none;margin:10px 0"></p>
+        <button onclick="document.getElementById('err-overlay').style.display='none'" style="border-color:var(--warn);color:var(--warn);background:#1a0000">DISMISS</button>
+    </div>
+</div>
+
+<!-- [1] CONFIRMATION MODAL -->
+<div id="conf-overlay">
+    <div class="conf-card">
+        <h3 id="conf-title">CONFIRM ACTION</h3>
+        <div id="conf-body"></div>
+        <div class="conf-btns">
+            <button class="conf-cancel" onclick="confCancel()">CANCEL</button>
+            <button class="conf-confirm" id="conf-ok-btn" onclick="confProceed()">CONFIRM &amp; EXECUTE</button>
+        </div>
+    </div>
+</div>
+
+<!-- VAULT DETAIL OVERLAY -->
+<div id="vault-detail" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.92);z-index:998;align-items:center;justify-content:center;padding:15px;overflow-y:auto">
+    <div style="border:1px solid var(--neon);background:#0a0a0a;padding:20px;max-width:550px;width:100%;box-shadow:0 0 20px rgba(0,255,0,.15);max-height:90vh;overflow-y:auto">
+        <h3 style="font-family:'Orbitron',monospace;font-size:.85em;color:var(--neon);margin:0 0 12px;display:flex;justify-content:space-between;align-items:center">
+            VAULT DETAIL
+            <span onclick="document.getElementById('vault-detail').style.display='none'" style="cursor:pointer;color:var(--warn);font-size:1.2em">&times;</span>
+        </h3>
+        <div id="vault-detail-body" style="font-size:.8em"><span style="color:#444">Loading...</span></div>
+    </div>
+</div>
+
+<!-- ESCROW DETAIL MODAL -->
+<div id="esc-detail">
+    <div class="detail-card">
+        <h3 id="det-title">ESCROW DETAILS</h3>
+        <div id="det-rows"></div>
+        <div class="detail-live" id="det-live"><span style="color:#444">Click CHECK to query live balance.</span></div>
+        <button id="det-check" onclick="detailCheckBalance()" style="border-color:var(--cyan);color:var(--cyan);font-size:.75em">CHECK LIVE BALANCE</button>
+        <button onclick="closeDetail()" style="margin-top:8px;background:#111;border-color:#333;color:#888;font-size:.75em">CLOSE</button>
+    </div>
+</div>
+
+<!-- HEADER -->
+<div class="studio-banner">XRPMAN STUDIOS PRESENTS</div>
+<div class="hdr">
+    <h1>PRECISION ESCROW TERMINAL</h1>
+    <div class="sub">SELF-CUSTODY TOKEN VAULT &mdash; SUB-WALLET ARCHITECTURE &mdash; v2.0</div>
+    <div class="ntog" id="netTog">
+        <button class="on" onclick="switchNet(this,'test')">TESTNET</button>
+        <button onclick="switchNet(this,'main')">MAINNET</button>
+    </div>
+</div>
+<div id="lib-st"><span style="color:#555">Loading libraries...</span></div>
+
+<div class="grid">
+
+    <!-- [01] WALLET -->
+    <div class="panel full" style="border-color:#ffcc00">
+        <h2>[01] PRIMARY WALLET <span class="tag tag-w">5 XRP MINIMUM</span></h2>
+        <!-- TEST MODE: Generate button (testnet only) -->
+        <div id="testPanel" style="margin-bottom:10px;padding:10px;border:2px solid var(--cyan);background:#001a1a">
+            <div style="font-family:'Orbitron',monospace;font-size:.75em;color:var(--cyan);margin-bottom:6px">TESTNET MODE — NO REAL FUNDS</div>
+            <button id="genTestBtn" onclick="generateTestWallet()" style="background:var(--cyan);color:#000;border-color:var(--cyan);font-size:13px;padding:12px">GENERATE TEST WALLET (1000 XRP + 1M TST TOKEN)</button>
+            <div id="testStatus" style="font-size:.72em;color:#555;margin-top:6px"></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <input id="w_seed" type="password" placeholder="ENTER SEED (sXXX...) OR MNEMONIC" style="flex:1;min-width:200px">
+            <button id="authBtn" onclick="authWallet()" style="width:150px;flex-shrink:0;border-color:#ffcc00;color:#ffcc00">CONNECT</button>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:4px">
+            <button onclick="document.getElementById('loadWalletFile').click()" style="flex:1;font-size:.7em;padding:6px;background:#111;border-color:#333;color:#888">LOAD WALLET (JSON)</button>
+            <input type="file" id="loadWalletFile" accept=".json" onchange="loadWalletJson(event)" style="display:none">
+            <button onclick="saveWalletJson()" id="saveWalletBtn" class="hidden" style="flex:1;font-size:.7em;padding:6px;background:#111;border-color:#333;color:#888">SAVE WALLET (JSON)</button>
+        </div>
+        <div id="w_info" style="font-size:.75em;margin-top:6px;color:#555">STATUS: OFFLINE</div>
+        <!-- Storage indicator -->
+        <div id="storage_status" style="font-size:.65em;color:#333;margin-top:4px"></div>
+        <div id="w_assets" class="hidden" style="margin-top:8px;border:1px solid #1a1a1a;background:#030303;padding:8px">
+            <div style="font-family:'Orbitron',monospace;font-size:.65em;color:var(--dim);margin-bottom:6px">PORTFOLIO</div>
+            <div id="w_xrp" style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #111">
+                <span style="color:var(--neon)">XRP <span style="color:#444;font-size:.8em">(L1 — NATIVE)</span></span>
+                <span id="w_xrp_bal" style="color:var(--neon)">0</span>
+            </div>
+            <div id="w_tokens"></div>
+        </div>
+    </div>
+
+    <!-- [02] ESCROW CONFIG -->
+    <div class="panel full" style="border-color:#00aa00">
+        <h2>[02] CREATE TOKEN ESCROW <span class="tag tag-c">SUB-WALLET VAULT</span></h2>
+
+        <!-- [10] Reserve explainer -->
+        <div class="reserve-note">
+            <b>HOW THIS WORKS:</b> Each escrow creates a sub-wallet funded with ~1.5 XRP. The XRPL base reserve (1 XRP) plus owner reserve (0.2 XRP per object such as a trust line) locks XRP in the sub-wallet while it holds tokens. <b>Claiming tokens is separate from recovering XRP</b> — after claiming, you must delete the sub-wallet in section [05] to recover the XRP minus the 0.2 XRP AccountDelete fee. Keep both passwords safe: <b>if both passwords are lost, vault recovery is impossible.</b>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+            <div>
+                <label>SELECT TOKEN TO ESCROW</label>
+                <select id="e_token_select" onchange="onTokenSelect()">
+                    <option value="">-- Connect wallet to load tokens --</option>
+                </select>
+                <div id="e_token_info" style="font-size:.65em;color:var(--txt);margin:4px 0;min-height:28px"></div>
+                <label>AMOUNT TO ESCROW</label>
+                <div style="display:flex;gap:4px">
+                    <input id="e_amount" type="number" placeholder="e.g. 1000" step="any" style="flex:1">
+                    <button onclick="setMaxAmount()" style="width:55px;font-size:.7em;padding:0">MAX</button>
+                </div>
+            </div>
+            <div>
+                <label>LOCK DURATION</label>
+                <div class="dur-btns" id="durBtns">
+                    <button onclick="setDur(this,30)">30D</button>
+                    <button onclick="setDur(this,90)">90D</button>
+                    <button onclick="setDur(this,180)">6M</button>
+                    <button onclick="setDur(this,365)">1Y</button>
+                </div>
+                <label>OR CUSTOM END DATE</label>
+                <input id="e_custom_date" type="datetime-local" onchange="clearDurBtns()">
+
+                <!-- [7] User password with confirm -->
+                <label>USER PASSWORD (FOR CLAIM)</label>
+                <div class="pw-wrap">
+                    <input id="e_user_pw" type="password" placeholder="Set a password (min 8 chars)">
+                    <button class="pw-toggle" type="button" onclick="togglePw('e_user_pw',this)">SHOW</button>
+                </div>
+                <div class="pw-wrap">
+                    <input id="e_user_pw2" type="password" placeholder="Confirm user password">
+                    <button class="pw-toggle" type="button" onclick="togglePw('e_user_pw2',this)">SHOW</button>
+                </div>
+
+                <!-- [7] Admin password with confirm -->
+                <label>ADMIN PASSWORD</label>
+                <div class="pw-wrap">
+                    <input id="e_admin_pw" type="password" placeholder="Admin password (min 8 chars)">
+                    <button class="pw-toggle" type="button" onclick="togglePw('e_admin_pw',this)">SHOW</button>
+                </div>
+                <div class="pw-wrap">
+                    <input id="e_admin_pw2" type="password" placeholder="Confirm admin password">
+                    <button class="pw-toggle" type="button" onclick="togglePw('e_admin_pw2',this)">SHOW</button>
+                </div>
+                <!-- [7] Password warning -->
+                <div style="font-size:.65em;color:#ff6600;margin-top:4px;line-height:1.5">&#9888; If both passwords are lost, vault recovery is not possible. Use at least 8 characters each.</div>
+            </div>
+        </div>
+        <div id="e_preview" style="font-size:.72em;color:var(--txt);margin-top:8px;padding:6px;border:1px solid #111;background:#030303;display:none"></div>
+        <button id="lockBtn" disabled onclick="createEscrowConfirm()" style="margin-top:8px">CONNECT WALLET FIRST</button>
+
+        <!-- [3] Create receipt -->
+        <div id="create_receipt" class="hidden"></div>
+    </div>
+
+    <!-- [03] ESCROW DASHBOARD -->
+    <div class="panel full">
+        <h2>[03] ESCROW VAULT <span class="tag">DASHBOARD</span></h2>
+        <div class="dtabs" id="dashTabs">
+            <button class="on" onclick="setTab(this,'active')">ACTIVE</button>
+            <!-- [4] Updated tab labels -->
+            <button onclick="setTab(this,'swept')">XRP RECOVERY PENDING</button>
+            <button onclick="setTab(this,'completed')">COMPLETED</button>
+            <button onclick="setTab(this,'all')">ALL</button>
+        </div>
+        <div id="dashboard" style="min-height:60px"><span style="color:#444">No escrows found.</span></div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+            <button onclick="exportEscrows()" style="font-size:.7em;padding:5px;background:#111;border-color:#333;color:#666;flex:1">EXPORT</button>
+            <button onclick="document.getElementById('importFile').click()" style="font-size:.7em;padding:5px;background:#111;border-color:#333;color:#666;flex:1">IMPORT</button>
+            <input type="file" id="importFile" accept=".json" onchange="importEscrows(event)" style="display:none">
+            <button onclick="refreshDashboard()" style="font-size:.7em;padding:5px;background:#111;border-color:#333;color:#666;flex:1">REFRESH</button>
+        </div>
+        <!-- [8] Import summary -->
+        <div id="import_summary" class="hidden" style="font-size:.72em;color:var(--txt);margin-top:6px;padding:6px;border:1px solid #222;background:#030303"></div>
+    </div>
+
+    <!-- [04] CLAIM -->
+    <div class="panel">
+        <h2>[04] CLAIM ESCROW <span class="tag tag-c">REDEEM</span></h2>
+
+        <!-- [11] Explicit claim note -->
+        <div style="background:#010810;border:1px solid #002255;padding:7px;font-size:.7em;color:var(--cyan);line-height:1.5;margin-bottom:6px">
+            &#9432; <b>CLAIM RETURNS TOKENS ONLY.</b> XRP remains locked in the vault until you delete the sub-wallet in section [05]. After claiming, use [05] to recover XRP.
+        </div>
+
+        <label>SELECT ESCROW TO CLAIM</label>
+        <select id="c_select" onchange="updateClaimBtn()"><option value="">-- Select --</option></select>
+        <label>USER PASSWORD</label>
+        <div class="pw-wrap">
+            <input id="c_user_pw" type="password" placeholder="Password set during creation">
+            <button class="pw-toggle" type="button" onclick="togglePw('c_user_pw',this)">SHOW</button>
+        </div>
+        <label>ADMIN PASSWORD</label>
+        <div class="pw-wrap">
+            <input id="c_admin_pw" type="password" placeholder="Admin password">
+            <button class="pw-toggle" type="button" onclick="togglePw('c_admin_pw',this)">SHOW</button>
+        </div>
+        <button id="claimBtn" disabled onclick="claimEscrowConfirm()">SELECT AN ESCROW</button>
+
+        <!-- [3] Claim receipt -->
+        <div id="claim_receipt" class="hidden"></div>
+    </div>
+
+    <!-- [05] WALLET DELETE (FALLBACK) -->
+    <div class="panel full" style="border-color:#ffcc00">
+        <h2>[05] WALLET DELETE <span class="tag tag-w">XRP RECOVERY</span></h2>
+
+        <div class="reserve-note" style="margin-bottom:8px">
+            <b>XRP RECOVERY:</b> After claiming tokens, the sub-wallet still holds ~1.3 XRP. Normally the auto-delete helper recovers this automatically after claim. Use this panel if auto-delete didn't finish (page was closed too early) or if you need to manually delete a vault.
+        </div>
+
+        <label>SELECT ESCROW VAULT</label>
+        <select id="wd_select" onchange="onWdSelect()" style="margin-bottom:4px"><option value="">-- Select --</option></select>
+        <div id="wd_info" style="font-size:.7em;color:var(--txt);min-height:20px;margin-bottom:6px"></div>
+        <div id="wd_no_eligible" class="hidden" style="font-size:.7em;color:#555;padding:6px;border:1px solid #1a1a1a;margin-bottom:6px">No eligible vaults. Claim an escrow in [04] first.</div>
+
+        <div style="font-size:.68em;color:var(--txt);margin-bottom:6px">DESTINATION: <span id="dest_display" class="inf">connect wallet first</span></div>
+        <div style="display:flex;gap:6px">
+            <div style="flex:1">
+                <label>USER PASSWORD</label>
+                <div class="pw-wrap">
+                    <input id="wd_upw" type="password" placeholder="User password">
+                    <button class="pw-toggle" type="button" onclick="togglePw('wd_upw',this)">SHOW</button>
+                </div>
+            </div>
+            <div style="flex:1">
+                <label>ADMIN PASSWORD</label>
+                <div class="pw-wrap">
+                    <input id="wd_apw" type="password" placeholder="Admin password">
+                    <button class="pw-toggle" type="button" onclick="togglePw('wd_apw',this)">SHOW</button>
+                </div>
+            </div>
+        </div>
+
+        <button id="wd_delete_btn" onclick="wdManualDelete()" style="border-color:#ffcc00;color:#ffcc00;margin-top:6px">DECRYPT &amp; DELETE WALLET</button>
+        <div id="wd_result" style="font-size:.75em;color:var(--txt);margin-top:4px"></div>
+        <div id="delete_receipt" class="hidden"></div>
+    </div>
+
+    <!-- BLACK BOX -->
+    <div class="panel full">
+        <h2>[SYSTEM LOG] <span class="tag tag-g">BLACK BOX</span></h2>
+        <div class="sbox" id="log"></div>
+    </div>
+
+</div>
+
+<div class="ftr"><span>POWERED BY XMEME</span></div>
+
+<script>
+// ============================================================
+// GLOBALS
+// ============================================================
+var NETS = {
+    test: ["wss://s.altnet.rippletest.net:51233"],
+    main: ["wss://xrplcluster.com","wss://s1.ripple.com","wss://s2.ripple.com"]
+};
+var NET = "test";
+var wallet = null;
+var client = null;
+var walletBal = 0;
+var walletAvail = 0;
+var walletTokens = [];
+var lockDays = 0;
+var ARGON2_PARAMS = { m: 32768, t: 3, p: 1, hashLen: 32, saltLen: 16 };
+var STORE_KEY = "xmeme_escrows";
+var dashTab = "active";
+
+// [1] Confirmation callback holder
+var pendingConfirmCallback = null;
+
+// ============================================================
+// VAULT GRID BACKGROUND ANIMATION
+// ============================================================
+(function initVaultGrid() {
+    var canvas = document.getElementById('vaultCanvas');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var w, h, cols, rows, cellSize = 40;
+    var scanY = 0;
+    var pulsePhase = 0;
+
+    function resize() {
+        w = canvas.width = window.innerWidth || 1;
+        h = canvas.height = window.innerHeight || 1;
+        cols = Math.ceil(w / cellSize) + 1;
+        rows = Math.ceil(h / cellSize) + 1;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    function draw() {
+        if (w <= 0 || h <= 0) { requestAnimationFrame(draw); return; }
+        ctx.clearRect(0, 0, w, h);
+        pulsePhase += 0.008;
+        scanY = (scanY + 0.4) % h;
+        if (!isFinite(scanY)) scanY = 0;
+
+        var baseAlpha = 0.04 + Math.sin(pulsePhase) * 0.015;
+        ctx.strokeStyle = 'rgba(0, 255, 0, ' + baseAlpha + ')';
+        ctx.lineWidth = 0.5;
+
+        for (var x = 0; x <= cols; x++) {
+            var px = x * cellSize;
+            ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, h); ctx.stroke();
+        }
+        for (var y = 0; y <= rows; y++) {
+            var py = y * cellSize;
+            ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(w, py); ctx.stroke();
+        }
+
+        for (var ix = 0; ix <= cols; ix++) {
+            for (var iy = 0; iy <= rows; iy++) {
+                var dotX = ix * cellSize;
+                var dotY = iy * cellSize;
+                var distToScan = Math.abs(dotY - scanY);
+                var glow = distToScan < 60 ? (1 - distToScan / 60) * 0.4 : 0;
+                var dotAlpha = 0.08 + glow;
+                ctx.fillStyle = 'rgba(0, 255, 0, ' + dotAlpha + ')';
+                var r = 1 + glow * 2;
+                ctx.beginPath(); ctx.arc(dotX, dotY, r, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+
+        var grad = ctx.createLinearGradient(0, scanY - 30, 0, scanY + 30);
+        grad.addColorStop(0, 'rgba(0, 255, 0, 0)');
+        grad.addColorStop(0.5, 'rgba(0, 255, 0, 0.08)');
+        grad.addColorStop(1, 'rgba(0, 255, 0, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, scanY - 30, w, 60);
+
+        requestAnimationFrame(draw);
+    }
+    draw();
+})();
+
+// ============================================================
+// LIB CHECK
+// ============================================================
+var libOK = false;
+window.addEventListener('load', function() {
+    setTimeout(function() {
+        var el = document.getElementById('lib-st');
+        if (typeof xrpl !== 'undefined' && typeof hashwasm !== 'undefined') {
+            libOK = true;
+            el.innerHTML = '<span class="succ">&#10003; LIBRARIES LOADED</span>';
+            lg('System ready. Libraries loaded.', 'succ');
+            renderDashboard();
+            populateSelects(); populateWdSelect();
+            updateChecklistStatic();
+            // Show stored escrow count
+            var stored = getEscrows();
+            var storEl = document.getElementById('storage_status');
+            if (storEl) {
+                storEl.innerHTML = stored.length > 0
+                    ? '&#128274; ' + stored.length + ' escrow record(s) in local storage'
+                    : 'No stored escrow data. Create an escrow or import records.';
+                storEl.style.color = stored.length > 0 ? '#00aa00' : '#333';
+            }
+            if (stored.length > 0) lg('Loaded ' + stored.length + ' escrow record(s) from storage.', 'inf');
+            // Check for persisted cooldown
+            try {
+                var savedCd = JSON.parse(localStorage.getItem('xmeme_wd_cooldown'));
+                if (savedCd && savedCd.cooldownEnd) {
+                    if (Date.now() >= savedCd.cooldownEnd) {
+                        lg('Wallet delete cooldown completed while away. Decrypt vault in [05] to proceed.', 'succ');
+                    } else {
+                        var cdRemain = Math.ceil((savedCd.cooldownEnd - Date.now()) / 60000);
+                        lg('Active cooldown: ~' + cdRemain + ' min remaining. Decrypt vault in [05] to resume.', 'inf');
+                    }
+                }
+            } catch(x) {}
+        } else {
+            el.innerHTML = '<span class="err">&#10007; LIBRARY LOAD FAILED</span>';
+            lg('Libraries failed. Refresh page.', 'err');
+        }
+    }, 2000);
+});
+
+// ============================================================
+// HELPERS
+// ============================================================
+function lg(m, c) {
+    var el = document.getElementById('log');
+    var cls = c ? ' class="' + c + '"' : '';
+    el.innerHTML += '<div><span style="color:#444">[' + new Date().toLocaleTimeString() + ']</span> <span' + cls + '>' + m + '</span></div>';
+    el.scrollTop = el.scrollHeight;
+}
+function showLoad(m) { document.getElementById('overlay-txt').textContent = m || 'PROCESSING...'; document.getElementById('overlay').style.display = 'flex'; }
+function hideLoad() { document.getElementById('overlay').style.display = 'none'; }
+function showErr(m) { lg('FAULT: ' + m, 'err'); document.getElementById('err-msg').innerText = m; document.getElementById('err-overlay').style.display = 'flex'; }
+
+function currencyToHex(code) {
+    if (!code) return '';
+    if (code.length === 3) return code;
+    if (code.length === 40 && /^[0-9A-Fa-f]+$/.test(code)) return code;
+    var hex = '';
+    for (var i = 0; i < code.length; i++) hex += code.charCodeAt(i).toString(16).padStart(2, '0');
+    return hex.padEnd(40, '0').toUpperCase();
+}
+function hexToCurrency(hex) {
+    if (!hex) return '???';
+    if (hex.length <= 3) return hex;
+    var str = '';
+    for (var i = 0; i < hex.length; i += 2) {
+        var b = parseInt(hex.substr(i, 2), 16);
+        if (b === 0) break;
+        str += String.fromCharCode(b);
+    }
+    return str || hex.slice(0, 8) + '...';
+}
+function truncAddr(a) { return a ? a.slice(0, 6) + '...' + a.slice(-4) : '???'; }
+function uuid() { return 'xxxx-xxxx'.replace(/x/g, function() { return (Math.random() * 16 | 0).toString(16); }); }
+function copyText(txt) {
+    navigator.clipboard.writeText(txt).then(function() {
+        lg('Copied to clipboard.', 'inf');
+    }).catch(function() {});
+}
+
+var toB64 = function(u8) { return btoa(String.fromCharCode.apply(null, u8)); };
+var fromB64 = function(b) { return new Uint8Array(Array.from(atob(b)).map(function(c) { return c.charCodeAt(0); })); };
+
+// [7] Password show/hide toggle
+function togglePw(inputId, btn) {
+    var inp = document.getElementById(inputId);
+    if (!inp) return;
+    if (inp.type === 'password') {
+        inp.type = 'text';
+        btn.textContent = 'HIDE';
+    } else {
+        inp.type = 'password';
+        btn.textContent = 'SHOW';
+    }
+}
+
+// ============================================================
+// [1] CONFIRMATION MODAL
+// ============================================================
+function showConfirm(title, bodyHtml, confirmLabel, callback) {
+    document.getElementById('conf-title').textContent = title;
+    document.getElementById('conf-body').innerHTML = bodyHtml;
+    var okBtn = document.getElementById('conf-ok-btn');
+    okBtn.textContent = confirmLabel || 'CONFIRM & EXECUTE';
+    pendingConfirmCallback = callback;
+    document.getElementById('conf-overlay').style.display = 'flex';
+}
+function confCancel() {
+    document.getElementById('conf-overlay').style.display = 'none';
+    pendingConfirmCallback = null;
+    lg('Action cancelled by user.', 'inf');
+}
+function confProceed() {
+    document.getElementById('conf-overlay').style.display = 'none';
+    if (typeof pendingConfirmCallback === 'function') {
+        var cb = pendingConfirmCallback;
+        pendingConfirmCallback = null;
+        // Handle async callbacks properly — catch errors
+        Promise.resolve().then(function() { return cb(); }).catch(function(err) {
+            showErr(err.message || 'Operation failed.');
+        });
+    } else {
+        pendingConfirmCallback = null;
+    }
+}
+
+function confRow(label, value) {
+    return '<div class="conf-row"><span class="cl">' + label + '</span><span class="cv">' + value + '</span></div>';
+}
+
+// ============================================================
+// [3] RECEIPT PANEL HELPER
+// ============================================================
+function buildReceiptRow(label, value) {
+    return '<div class="receipt-row"><span class="rl">' + label + '</span><span class="rv">' + value + '</span></div>';
+}
+function buildHashLine(label, hash) {
+    if (!hash) return '';
+    return '<div class="receipt-hash" onclick="copyText(\'' + hash + '\')" title="Click to copy">' + label + ': ' + hash + ' &#128203;</div>';
+}
+function showReceipt(panelId, titleText, rows, hashes, noteHtml) {
+    var el = document.getElementById(panelId);
+    if (!el) return;
+    var html = '<div class="receipt-panel">';
+    html += '<div class="r-title">&#10003; ' + titleText + '</div>';
+    html += rows;
+    if (hashes) html += hashes;
+    if (noteHtml) html += '<div class="receipt-note">' + noteHtml + '</div>';
+    html += '</div>';
+    el.innerHTML = html;
+    el.classList.remove('hidden');
+}
+
+// ============================================================
+// ARGON2 + AES-256-GCM
+// ============================================================
+async function deriveKey(adminPw, userPw, salt) {
+    var raw = await hashwasm.argon2id({
+        password: adminPw + '\x00' + userPw,
+        salt: salt,
+        parallelism: ARGON2_PARAMS.p,
+        iterations: ARGON2_PARAMS.t,
+        memorySize: ARGON2_PARAMS.m,
+        hashLength: ARGON2_PARAMS.hashLen,
+        outputType: 'binary'
+    });
+    return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+async function encryptSeed(seed, adminPw, userPw) {
+    var salt = crypto.getRandomValues(new Uint8Array(ARGON2_PARAMS.saltLen));
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    var key = await deriveKey(adminPw, userPw, salt);
+    var ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(seed)));
+    return { salt: salt, iv: iv, ct: ct };
+}
+
+async function decryptSeed(vaultData, adminPw, userPw) {
+    var key = await deriveKey(adminPw, userPw, fromB64(vaultData.salt));
+    var plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(vaultData.iv) }, key, fromB64(vaultData.ct));
+    return new TextDecoder().decode(plain);
+}
+
+// ============================================================
+// CONNECTION
+// ============================================================
+function switchNet(el, net) {
+    if (client) { try { client.disconnect(); } catch(x) {} client = null; }
+    NET = net;
+    wallet = null;
+    walletBal = 0;
+    walletTokens = [];
+    document.querySelectorAll('#netTog button').forEach(function(b) { b.classList.remove('on'); });
+    el.classList.add('on');
+    document.getElementById('w_info').innerHTML = 'STATUS: OFFLINE';
+    document.getElementById('w_assets').classList.add('hidden');
+    document.getElementById('w_tokens').innerHTML = '';
+    document.getElementById('e_token_select').innerHTML = '<option value="">-- Connect wallet to load tokens --</option>';
+    document.getElementById('e_token_info').innerHTML = '';
+    document.getElementById('lockBtn').disabled = true;
+    document.getElementById('lockBtn').textContent = 'CONNECT WALLET FIRST';
+    document.getElementById('saveWalletBtn').classList.add('hidden');
+    // Show/hide test panel
+    document.getElementById('testPanel').style.display = (net === 'test') ? 'block' : 'none';
+    document.getElementById('testStatus').innerHTML = '';
+    updateChecklistStatic();
+    lg('Switched to ' + net.toUpperCase(), 'inf');
+}
+
+async function generateTestWallet() {
+    if (NET !== 'test') { showErr('Switch to TESTNET first.'); return; }
+    var statusEl = document.getElementById('testStatus');
+    document.getElementById('genTestBtn').disabled = true;
+
+    try {
+        statusEl.innerHTML = '<span class="i" rel="stylesheet">
     <script src="https://unpkg.com/xrpl@3.1.0/build/xrpl-latest-min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hash-wasm@4"></script>
     <style>
