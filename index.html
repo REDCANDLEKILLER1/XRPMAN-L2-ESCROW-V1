@@ -218,9 +218,7 @@
         </div>
         <div id="dashboard" style="min-height:60px"><span style="color:#444">No escrows found.</span></div>
         <div style="display:flex;gap:6px;margin-top:6px">
-            <button onclick="exportEscrows()" style="font-size:.7em;padding:5px;background:#111;border-color:#333;color:#666;flex:1">EXPORT</button>
-            <button onclick="document.getElementById('importFile').click()" style="font-size:.7em;padding:5px;background:#111;border-color:#333;color:#666;flex:1">IMPORT</button>
-            <input type="file" id="importFile" accept=".json" onchange="importEscrows(event)" style="display:none">
+            <button onclick="exportEscrows()" style="font-size:.7em;padding:5px;background:#111;border-color:#333;color:#666;flex:1">EXPORT RECORDS</button>
             <button onclick="refreshDashboard()" style="font-size:.7em;padding:5px;background:#111;border-color:#333;color:#666;flex:1">REFRESH</button>
         </div>
     </div>
@@ -748,4 +746,9 @@ async function createEscrow() {
             }
             throw new Error('CheckCash failed: ' + cashRes.result.meta.TransactionResult);
         }
-        lg('
+        lg('Tokens secured in sub-wallet!', 'succ');
+
+        // Step 4: Encrypt sub-wallet seed with Argon2id
+        showLoad('ENCRYPTING VAULT (ARGON2ID)...');
+        lg('Encrypting sub-wallet seed with Argon2id + AES-256-GCM...', 'inf');
+        var enc = await encryptSeed(sub.seed, adminPw, u
