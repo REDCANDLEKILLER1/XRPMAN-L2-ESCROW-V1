@@ -689,4 +689,1562 @@ function switchNet(el, net) {
 
 async function generateTestWallet() {
     if (NET !== 'test') { showErr('Switch to TESTNET first.'); return; }
-    if (!lib
+    if (!libOK) { showErr('Libraries not loaded yet. Wait for green checkmark.'); return; }
+    var statusEl = document.getElementById('testStatus');
+    document.getElementById('genTestBtn').disabled = true;
+    showLoad('GENERATING TEST WALLET...');
+
+    try {
+        statusEl.innerHTML = '<span class="inf">Connecting to testnet...</span>';
+        lg('Generating test environment...', 'inf');
+        if (client) { try { client.disconnect(); } catch(x) {} client = null; }
+        var c = await getClient();
+
+        showLoad('FUNDING FROM FAUCET (10-30s)...');
+        statusEl.innerHTML = '<span class="inf">Funding test wallet from faucet (can take 10-30s)...</span>';
+        lg('Requesting test XRP from faucet...', 'inf');
+        var testWallet = xrpl.Wallet.generate();
+        var fundResult = await c.fundWallet(testWallet);
+        testWallet = fundResult.wallet;
+        lg('Test wallet funded: ' + testWallet.address, 'succ');
+
+        showLoad('FUNDING ISSUER...');
+        statusEl.innerHTML = '<span class="inf">Creating token issuer...</span>';
+        var issuerWallet = xrpl.Wallet.generate();
+        var issuerFund = await c.fundWallet(issuerWallet);
+        issuerWallet = issuerFund.wallet;
+        lg('Issuer funded: ' + issuerWallet.address, 'succ');
+
+        // Enable DefaultRipple on issuer (required for token transfers)
+        statusEl.innerHTML = '<span class="inf">Enabling DefaultRipple on issuer...</span>';
+        var rippleTx = await c.autofill({
+            TransactionType: 'AccountSet',
+            Account: issuerWallet.address,
+            SetFlag: 8 // asfDefaultRipple
+        });
+        await c.submitAndWait(issuerWallet.sign(rippleTx).tx_blob);
+        lg('DefaultRipple enabled on issuer.', 'succ');
+
+        statusEl.innerHTML = '<span class="inf">Setting trust line for TST token...</span>';
+        var trustTx = await c.autofill({
+            TransactionType: 'TrustSet',
+            Account: testWallet.address,
+            LimitAmount: { currency: 'TST', issuer: issuerWallet.address, value: '10000000' }
+        });
+        await c.submitAndWait(testWallet.sign(trustTx).tx_blob);
+
+        statusEl.innerHTML = '<span class="inf">Issuing 1,000,000 TST tokens...</span>';
+        var payTx = await c.autofill({
+            TransactionType: 'Payment',
+            Account: issuerWallet.address,
+            Destination: testWallet.address,
+            Amount: { currency: 'TST', issuer: issuerWallet.address, value: '1000000' }
+        });
+        await c.submitAndWait(issuerWallet.sign(payTx).tx_blob);
+        lg('1,000,000 TST issued.', 'succ');
+
+        statusEl.innerHTML = '<span class="succ">TEST WALLET READY! Auto-connecting...</span>';
+        document.getElementById('w_seed').value = testWallet.seed;
+        await authWallet();
+
+        // Build wallet JSON for save
+        var walletJson = {
+            type: 'xmeme_test_wallet',
+            created: new Date().toISOString(),
+            network: 'test',
+            wallet: { address: testWallet.address, seed: testWallet.seed },
+            issuer: { address: issuerWallet.address, seed: issuerWallet.seed },
+            token: { currency: 'TST', amount: '1000000' }
+        };
+
+        // Auto-download
+        var blob = new Blob([JSON.stringify(walletJson, null, 2)], { type: 'application/json' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'test-wallet-' + testWallet.address.slice(0,8) + '.json';
+        a.click();
+        lg('Test wallet JSON auto-saved.', 'succ');
+
+        statusEl.innerHTML =
+            '<span class="succ">TEST ENVIRONMENT ACTIVE</span><br>' +
+            '<span style="color:var(--txt);font-size:.9em">' +
+            'Wallet: ' + testWallet.address + '<br>' +
+            'Seed: <span style="color:var(--cyan)">' + testWallet.seed + '</span><br>' +
+            'Token: 1,000,000 TST | Issuer: ' + truncAddr(issuerWallet.address) +
+            '</span><br>' +
+            '<span style="color:#ffcc00;font-size:.8em">&#128190; Wallet JSON saved to downloads. Use LOAD WALLET below to reconnect after refresh.</span>';
+
+        lg('=== TEST ENVIRONMENT READY === ~1000 XRP + 1M TST', 'succ');
+
+    } catch(e) {
+        statusEl.innerHTML = '<span class="err">Failed: ' + e.message + '</span>';
+        lg('Test wallet generation failed: ' + e.message, 'err');
+        showErr('Test wallet failed: ' + e.message);
+    } finally {
+        hideLoad();
+    }
+    document.getElementById('genTestBtn').disabled = false;
+}
+
+async function loadWalletJson(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = async function(e) {
+        try {
+            var data = JSON.parse(e.target.result);
+            // Accept both formats: {wallet:{seed}} or {seed}
+            var seed = (data.wallet && data.wallet.seed) ? data.wallet.seed : data.seed;
+            if (!seed) throw new Error('No seed found in JSON file.');
+
+            // Network check
+            if (data.network && data.network !== NET) {
+                lg('Warning: JSON is for ' + data.network + ' but you are on ' + NET + '. Switching...', 'inf');
+            }
+
+            document.getElementById('w_seed').value = seed;
+            await authWallet();
+
+            var addr = (data.wallet && data.wallet.address) ? data.wallet.address : (wallet ? wallet.address : '');
+            lg('Wallet loaded from JSON: ' + addr, 'succ');
+
+            // If testnet, show status
+            if (NET === 'test') {
+                var statusEl = document.getElementById('testStatus');
+                if (statusEl) {
+                    statusEl.innerHTML =
+                        '<span class="succ">WALLET LOADED FROM FILE</span><br>' +
+                        '<span style="color:var(--txt);font-size:.9em">' +
+                        'Wallet: ' + addr +
+                        (data.issuer ? '<br>Issuer: ' + data.issuer.address : '') +
+                        (data.token ? '<br>Token: ' + data.token.amount + ' ' + data.token.currency : '') +
+                        '</span>';
+                }
+            }
+        } catch(err) {
+            showErr('Load failed: ' + err.message);
+        }
+        event.target.value = '';
+    };
+    reader.readAsText(file);
+}
+
+function saveWalletJson() {
+    if (!wallet) return showErr('Connect a wallet first.');
+    var seed = document.getElementById('w_seed').value.trim();
+    if (!seed) return showErr('No seed to save.');
+
+    var data = {
+        type: 'xmeme_wallet',
+        created: new Date().toISOString(),
+        network: NET,
+        wallet: { address: wallet.address, seed: seed }
+    };
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'wallet-' + NET + '-' + wallet.address.slice(0, 8) + '.json';
+    a.click();
+    lg('Wallet saved to JSON. Keep this file secure — it contains your seed.', 'succ');
+}
+
+async function getClient() {
+    if (client && client.isConnected()) return client;
+    var nodes = NETS[NET];
+    for (var i = 0; i < nodes.length; i++) {
+        try {
+            lg('Connecting to ' + nodes[i] + '...');
+            var c = new xrpl.Client(nodes[i], { timeout: 25000 });
+            await c.connect();
+            lg('Connected.', 'succ');
+            client = c;
+            c.on('disconnected', function() { client = null; });
+            return c;
+        } catch (e) { lg('Node failed: ' + e.message, 'err'); }
+    }
+    throw new Error('All nodes failed. Check internet.');
+}
+
+// ============================================================
+// AUTO-DELETE HELPER — Background wallet deletion after claim
+// Proven destroyer pattern: gap check → fail_hard → poll
+// ============================================================
+var autoDeleteHelper = null; // interval ID
+var autoDeleteSub = null;    // wallet object
+var autoDeleteDest = null;   // destination address
+var autoDeleteEscrowId = null;
+var autoDeleteAttempts = 0;
+
+// Try to delete right now — returns 'deleted', 'too_soon', 'has_objects', or 'failed'
+async function tryDeleteNow(sub, destAddress, escrowId) {
+    var c;
+    try {
+        // Fresh connection
+        if (client) { try { client.disconnect(); } catch(x) {} client = null; }
+        c = await getClient();
+
+        var acctInfo;
+        try {
+            acctInfo = await c.request({ command: 'account_info', account: sub.address, ledger_index: 'validated' });
+        } catch(gone) {
+            if (gone.message && (gone.message.includes('actNotFound') || gone.message.includes('Account not found'))) {
+                // Already gone — mark deleted
+                markEscrowDeleted(escrowId, '');
+                return 'deleted';
+            }
+            throw gone;
+        }
+
+        var ownerCount = acctInfo.result.account_data.OwnerCount || 0;
+        var bal = parseFloat(xrpl.dropsToXrp(acctInfo.result.account_data.Balance));
+        var acctSeq = acctInfo.result.account_data.Sequence;
+        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
+        var currentLedger = ledgerResp.result.ledger_index;
+        var gap = currentLedger - acctSeq;
+
+        lg('Delete check: ' + bal.toFixed(2) + ' XRP | Objects: ' + ownerCount + ' | Gap: ' + gap + '/256', 'inf');
+
+        if (ownerCount > 0) return 'has_objects';
+        if (gap < 256) return 'too_soon';
+
+        // ELIGIBLE — proven destroyer pattern
+        lg('Gap ' + gap + ' — eligible. Submitting AccountDelete with fail_hard...', 'succ');
+        if (client) { try { client.disconnect(); } catch(x) {} client = null; }
+        c = await getClient();
+
+        var delTx = await c.autofill({
+            TransactionType: 'AccountDelete', Account: sub.address,
+            Destination: destAddress, Fee: '200000'
+        });
+        delTx.Fee = '200000';
+        delTx.LastLedgerSequence = currentLedger + 100;
+
+        var submitRes = await c.request({
+            command: 'submit', tx_blob: sub.sign(delTx).tx_blob, fail_hard: true
+        });
+        var eng = submitRes.result.engine_result;
+        var delHash = submitRes.result.tx_json && submitRes.result.tx_json.hash ? submitRes.result.tx_json.hash : '';
+        lg('Submit: ' + eng + (delHash ? ' | TX: ' + delHash : ''), eng === 'tesSUCCESS' ? 'succ' : 'err');
+
+        if (eng === 'tesSUCCESS' || eng === 'terQUEUED') {
+            // Poll for confirmation
+            lg('Polling for deletion...', 'inf');
+            for (var p = 0; p < 20; p++) {
+                await new Promise(function(r) { setTimeout(r, 3000); });
+                try {
+                    await c.request({ command: 'account_info', account: sub.address, ledger_index: 'validated' });
+                } catch(gone) {
+                    if (gone.message && (gone.message.includes('actNotFound') || gone.message.includes('Account not found'))) {
+                        lg('WALLET DELETED! ' + bal.toFixed(2) + ' XRP returned (minus 0.2 burn).', 'succ');
+                        markEscrowDeleted(escrowId, delHash);
+                        return 'deleted';
+                    }
+                }
+            }
+            lg('Delete submitted but not confirmed. Will retry...', 'inf');
+            return 'failed';
+        } else if (eng === 'tecTOO_SOON') {
+            return 'too_soon';
+        }
+        return 'failed';
+
+    } catch(e) {
+        lg('Delete attempt error: ' + e.message, 'err');
+        return 'failed';
+    }
+}
+
+function markEscrowDeleted(escrowId, delHash) {
+    var escrows = getEscrows();
+    var e = escrows.find(function(x) { return x.id === escrowId; });
+    if (e) {
+        e.status = 'deleted';
+        e.deletedAt = Date.now();
+        if (!e.txHashes) e.txHashes = {};
+        if (delHash) e.txHashes.accountDelete = delHash;
+        localStorage.setItem(STORE_KEY, JSON.stringify(escrows));
+    }
+    localStorage.removeItem('xmeme_wd_cooldown');
+    renderDashboard();
+    populateSelects(); populateWdSelect();
+}
+
+function startAutoDeleteHelper(sub, destAddress, escrowId) {
+    // Stop any existing helper
+    stopAutoDeleteHelper();
+
+    autoDeleteSub = sub;
+    autoDeleteDest = destAddress;
+    autoDeleteEscrowId = escrowId;
+    autoDeleteAttempts = 0;
+
+    lg('Background auto-delete helper started. Checking every 45s...', 'inf');
+
+    autoDeleteHelper = setInterval(async function() {
+        autoDeleteAttempts++;
+        lg('Auto-delete ping #' + autoDeleteAttempts + '...', '');
+
+        try {
+            var result = await tryDeleteNow(autoDeleteSub, autoDeleteDest, autoDeleteEscrowId);
+            if (result === 'deleted') {
+                lg('=== AUTO-DELETE COMPLETE! XRP RECOVERED. ===', 'succ');
+                stopAutoDeleteHelper();
+                // Refresh wallet balance
+                try {
+                    if (client) { try { client.disconnect(); } catch(x) {} client = null; }
+                    await refreshWallet(true);
+                } catch(x) {}
+                renderDashboard();
+            } else if (result === 'too_soon') {
+                // Still waiting — check gap for progress display
+                try {
+                    var c = await getClient();
+                    var info = await c.request({ command: 'account_info', account: autoDeleteSub.address, ledger_index: 'validated' });
+                    var seq = info.result.account_data.Sequence;
+                    var lr = await c.request({ command: 'ledger', ledger_index: 'validated' });
+                    var gap = lr.result.ledger_index - seq;
+                    lg('  Gap: ' + gap + '/256 — ~' + Math.ceil((256 - gap) * 3.5 / 60) + ' min remaining', '');
+                } catch(x) {}
+            } else if (result === 'has_objects') {
+                lg('  Account still has objects. Waiting for ledger to clear...', 'err');
+            }
+            // Give up after 30 attempts (~22 min) — shouldn't happen but safety
+            if (autoDeleteAttempts >= 30) {
+                lg('Auto-delete gave up after 30 attempts. Use [05] to delete manually.', 'err');
+                stopAutoDeleteHelper();
+            }
+        } catch(e) {
+            lg('Auto-delete error: ' + e.message, 'err');
+        }
+    }, 45000); // Every 45 seconds
+}
+
+function stopAutoDeleteHelper() {
+    if (autoDeleteHelper) {
+        clearInterval(autoDeleteHelper);
+        autoDeleteHelper = null;
+    }
+    autoDeleteSub = null;
+    autoDeleteDest = null;
+    autoDeleteEscrowId = null;
+    autoDeleteAttempts = 0;
+}
+
+// ============================================================
+// [01] WALLET AUTH
+// ============================================================
+async function authWallet() {
+    if (!libOK) return;
+    var input = document.getElementById('w_seed').value.trim();
+    if (!input) { lg('Enter a seed first.', 'err'); return; }
+
+    showLoad('AUTHENTICATING...');
+    try {
+        wallet = input.includes(' ') ? xrpl.Wallet.fromMnemonic(input) : xrpl.Wallet.fromSeed(input);
+        lg('Wallet: ' + truncAddr(wallet.address), 'inf');
+        await refreshWallet();
+        document.getElementById('lockBtn').disabled = false;
+        document.getElementById('lockBtn').textContent = 'EXECUTE ESCROW LOCK';
+        document.getElementById('lockBtn').style.background = 'var(--neon)';
+        document.getElementById('lockBtn').style.color = '#000';
+        populateSelects(); populateWdSelect();
+        updateChecklistStatic();
+        // Show save wallet button
+        document.getElementById('saveWalletBtn').classList.remove('hidden');
+        // Auto-audit swept vaults — mark deleted ones
+        auditVaultStatus();
+    } catch (e) { showErr(e.message); }
+    finally { hideLoad(); }
+}
+
+async function refreshWallet(silent) {
+    if (!wallet) return;
+    var c = await getClient();
+    var info = await c.request({ command: 'account_info', account: wallet.address, ledger_index: 'validated' });
+    walletBal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
+    var ownerCount = info.result.account_data.OwnerCount || 0;
+
+    var baseReserve = 1;
+    var ownerReserve = 0.2;
+    walletAvail = Math.max(0, walletBal - baseReserve - (ownerCount * ownerReserve));
+
+    document.getElementById('w_info').innerHTML = '<span class="succ">ONLINE: ' + truncAddr(wallet.address) + ' | ' + walletBal.toFixed(2) + ' XRP (spendable: ' + walletAvail.toFixed(2) + ')</span>';
+    if (!silent) lg('Balance: ' + walletBal.toFixed(2) + ' XRP | Reserve locked: ' + (walletBal - walletAvail).toFixed(2) + ' | Spendable: ' + walletAvail.toFixed(2), 'succ');
+
+    if (walletAvail < 1.5) {
+        document.getElementById('w_info').innerHTML += ' <span class="err">— LOW SPENDABLE</span>';
+    }
+
+    document.getElementById('w_assets').classList.remove('hidden');
+    document.getElementById('w_xrp_bal').textContent = walletBal.toFixed(6) + ' XRP';
+
+    walletTokens = [];
+    var tokensHtml = '';
+    try {
+        var lines = await c.request({ command: 'account_lines', account: wallet.address, ledger_index: 'validated' });
+        var allLines = lines.result.lines || [];
+        if (!silent) lg('Found ' + allLines.length + ' trust line(s)', 'inf');
+
+        for (var i = 0; i < allLines.length; i++) {
+            var line = allLines[i];
+            var bal = parseFloat(line.balance);
+            var name = hexToCurrency(line.currency);
+            var currHex = currencyToHex(line.currency);
+
+            walletTokens.push({
+                currency: line.currency,
+                currencyHex: currHex,
+                name: name,
+                issuer: line.account,
+                balance: line.balance,
+                balNum: bal
+            });
+
+            var balColor = bal > 0 ? 'var(--neon)' : '#444';
+            tokensHtml += '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #111">' +
+                '<span style="color:' + balColor + '">' + name +
+                ' <span style="color:#333;font-size:.75em">(L2 — ' + truncAddr(line.account) + ')</span></span>' +
+                '<span style="color:' + balColor + '">' + bal.toLocaleString(undefined, {maximumFractionDigits: 6}) + '</span>' +
+                '</div>';
+
+            if (!silent && bal > 0) lg('L2: ' + name + ' — ' + line.balance + ' (issuer: ' + truncAddr(line.account) + ')', 'inf');
+        }
+    } catch(x) { lg('Token load: ' + x.message, 'err'); }
+
+    document.getElementById('w_tokens').innerHTML = tokensHtml || '<div style="color:#444;padding:5px 0">No L2 tokens found.</div>';
+
+    var sel = document.getElementById('e_token_select');
+    sel.innerHTML = '<option value="">-- Select a token to escrow --</option>';
+    var hasTokens = false;
+    for (var j = 0; j < walletTokens.length; j++) {
+        var t = walletTokens[j];
+        if (t.balNum > 0) {
+            var opt = document.createElement('option');
+            opt.value = j;
+            opt.textContent = t.name + ' — ' + parseFloat(t.balance).toLocaleString(undefined, {maximumFractionDigits: 6}) + ' (issuer: ' + truncAddr(t.issuer) + ')';
+            sel.appendChild(opt);
+            hasTokens = true;
+        }
+    }
+    if (!hasTokens) {
+        sel.innerHTML = '<option value="">-- No tokens with balance --</option>';
+    }
+    document.getElementById('e_token_info').innerHTML = '';
+}
+
+// Auto-audit: check swept/claimed vaults against ledger, mark deleted ones
+async function auditVaultStatus() {
+    var escrows = getEscrows();
+    var needCheck = escrows.filter(function(e) {
+        return e.status === 'swept_ready_for_delete' || e.status === 'claimed' || e.status === 'cancelled';
+    });
+    if (needCheck.length === 0) return;
+
+    lg('Auditing ' + needCheck.length + ' vault(s) against ledger...', 'inf');
+    var updated = 0;
+    try {
+        var c = await getClient();
+        for (var i = 0; i < needCheck.length; i++) {
+            var e = needCheck[i];
+            try {
+                await c.request({ command: 'account_info', account: e.subAddress, ledger_index: 'validated' });
+                // Account exists — leave status as-is
+            } catch(err) {
+                if (err.message && (err.message.includes('actNotFound') || err.message.includes('Account not found'))) {
+                    // Account is gone — mark as deleted
+                    var idx = escrows.findIndex(function(x) { return x.id === e.id; });
+                    if (idx >= 0 && escrows[idx].status !== 'deleted') {
+                        escrows[idx].status = 'deleted';
+                        updated++;
+                        lg('  ' + truncAddr(e.subAddress) + ' — account deleted on ledger. Status updated.', 'succ');
+                    }
+                }
+            }
+        }
+        if (updated > 0) {
+            localStorage.setItem(STORE_KEY, JSON.stringify(escrows));
+            renderDashboard();
+            populateSelects(); populateWdSelect();
+            lg('Audit complete: ' + updated + ' vault(s) marked as deleted.', 'succ');
+        } else {
+            lg('Audit complete: all ' + needCheck.length + ' vault(s) still exist on ledger.', 'inf');
+        }
+    } catch(x) {
+        lg('Audit error: ' + x.message, 'err');
+    }
+}
+
+function onTokenSelect() {
+    var idx = document.getElementById('e_token_select').value;
+    var infoEl = document.getElementById('e_token_info');
+    if (idx === '' || !walletTokens[idx]) {
+        infoEl.innerHTML = '';
+        return;
+    }
+    var t = walletTokens[idx];
+    infoEl.innerHTML = 'Issuer: <span class="inf">' + t.issuer + '</span><br>' +
+        'Currency hex: <span style="color:#555">' + t.currencyHex + '</span><br>' +
+        'Available: <span class="succ">' + parseFloat(t.balance).toLocaleString(undefined, {maximumFractionDigits: 6}) + '</span>';
+    updatePreview();
+}
+
+function setMaxAmount() {
+    var idx = document.getElementById('e_token_select').value;
+    if (idx === '' || !walletTokens[idx]) { lg('Select a token first.', 'err'); return; }
+    document.getElementById('e_amount').value = walletTokens[idx].balance;
+    updatePreview();
+}
+
+function getSelectedToken() {
+    var idx = document.getElementById('e_token_select').value;
+    if (idx === '' || !walletTokens[idx]) return null;
+    return walletTokens[idx];
+}
+
+// ============================================================
+// DURATION BUTTONS
+// ============================================================
+function setDur(el, days) {
+    lockDays = days;
+    document.querySelectorAll('#durBtns button').forEach(function(b) { b.classList.remove('sel'); });
+    el.classList.add('sel');
+    document.getElementById('e_custom_date').value = '';
+    updatePreview();
+}
+function clearDurBtns() {
+    lockDays = 0;
+    document.querySelectorAll('#durBtns button').forEach(function(b) { b.classList.remove('sel'); });
+    updatePreview();
+}
+function getUnlockDate() {
+    if (lockDays > 0) {
+        var d = new Date();
+        d.setDate(d.getDate() + lockDays);
+        return d;
+    }
+    var cv = document.getElementById('e_custom_date').value;
+    return cv ? new Date(cv) : null;
+}
+function updatePreview() {
+    var unlock = getUnlockDate();
+    var pre = document.getElementById('e_preview');
+    if (!unlock) { pre.style.display = 'none'; return; }
+    var amt = document.getElementById('e_amount').value || '?';
+    var token = getSelectedToken();
+    var name = token ? token.name : '?';
+    pre.style.display = 'block';
+    pre.innerHTML = 'PREVIEW: Lock <span class="inf">' + amt + ' ' + name + '</span> until <span class="inf">' + unlock.toLocaleString() + '</span> (' + Math.ceil((unlock - Date.now()) / 86400000) + ' days)';
+}
+document.addEventListener('input', function(e) {
+    if (['e_amount', 'e_custom_date', 'e_token_select'].includes(e.target.id)) updatePreview();
+});
+
+// ============================================================
+// [02] CREATE ESCROW — CONFIRM then EXECUTE
+// ============================================================
+
+// [1.1] Show confirmation before executing
+function createEscrowConfirm() {
+    // [13.1] Pre-flight blocking checks
+    if (!wallet) return showErr('Connect wallet first.');
+    var token = getSelectedToken();
+    if (!token) return showErr('Select a token to escrow.');
+    var amount = document.getElementById('e_amount').value;
+    if (!amount || parseFloat(amount) <= 0) return showErr('Enter a valid amount.');
+    if (parseFloat(amount) > parseFloat(token.balance)) return showErr('Amount exceeds balance (' + token.balance + ' available).');
+    var unlockDate = getUnlockDate();
+    if (!unlockDate || unlockDate <= new Date()) return showErr('Unlock date must be in the future.');
+    var userPw = document.getElementById('e_user_pw').value;
+    var userPw2 = document.getElementById('e_user_pw2').value;
+    var adminPw = document.getElementById('e_admin_pw').value;
+    var adminPw2 = document.getElementById('e_admin_pw2').value;
+    if (!userPw || userPw.length < 8) return showErr('User password must be at least 8 characters.');
+    if (!adminPw || adminPw.length < 8) return showErr('Admin password must be at least 8 characters.');
+    // [7.3] Confirm password match check
+    if (userPw !== userPw2) return showErr('User passwords do not match. Re-enter to confirm.');
+    if (adminPw !== adminPw2) return showErr('Admin passwords do not match. Re-enter to confirm.');
+    if (walletAvail < 1.6) return showErr('Not enough spendable XRP. Need ~1.6 XRP after reserves.\nTotal: ' + walletBal.toFixed(2) + ' XRP\nSpendable: ' + walletAvail.toFixed(2));
+
+    // [2.1] Self-wallet check (primary cannot equal sub — sub is generated, but guard primary address vs issuer)
+    // (Sub-wallet is freshly generated, cannot match primary at creation time)
+
+    var bodyHtml =
+        confRow('PRIMARY WALLET', truncAddr(wallet.address)) +
+        confRow('TOKEN', token.name) +
+        confRow('ISSUER', truncAddr(token.issuer)) +
+        confRow('AMOUNT', amount + ' ' + token.name) +
+        confRow('UNLOCK DATE', unlockDate.toLocaleString()) +
+        confRow('XRP FUNDING', '1.5 XRP for sub-wallet') +
+        confRow('NETWORK', NET.toUpperCase()) +
+        '<div class="conf-warn">&#9888; A new sub-wallet will be created and funded. Both passwords are required later to claim tokens and delete the wallet. If both passwords are lost, vault recovery is impossible. This action creates an on-chain escrow.</div>';
+
+    showConfirm('CONFIRM CREATE ESCROW', bodyHtml, 'CONFIRM & LOCK', createEscrow);
+}
+
+async function createEscrow() {
+    var token = getSelectedToken();
+    if (!token) return showErr('Token no longer selected.');
+    var amount = document.getElementById('e_amount').value;
+    var userPw = document.getElementById('e_user_pw').value;
+    var adminPw = document.getElementById('e_admin_pw').value;
+    var unlockDate = getUnlockDate();
+    var issuer = token.issuer;
+    var currency = token.currencyHex;
+    var curInput = token.name;
+
+    showLoad('GENERATING SUB-WALLET...');
+    var c, sub, savedSubSeed;
+    try {
+        c = await getClient();
+        sub = xrpl.Wallet.generate();
+        savedSubSeed = sub.seed;
+        lg('Sub-wallet generated: ' + truncAddr(sub.address), 'inf');
+
+        // [2.1] Guard: sub cannot equal primary (sanity — extremely unlikely but explicit)
+        if (sub.address === wallet.address) {
+            throw new Error('Generated sub-wallet address collides with primary wallet. Retry.');
+        }
+
+        // Step 1: Fund sub-wallet
+        showLoad('FUNDING SUB-WALLET (1.5 XRP)...');
+        lg('Sending 1.5 XRP to activate sub-wallet...', 'inf');
+        var fundTx = await c.autofill({
+            TransactionType: 'Payment',
+            Account: wallet.address,
+            Destination: sub.address,
+            Amount: xrpl.xrpToDrops('1.5'),
+            Fee: '12'
+        });
+        var fundRes = await c.submitAndWait(wallet.sign(fundTx).tx_blob);
+        if (fundRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Fund failed: ' + fundRes.result.meta.TransactionResult);
+        // [9.1] Fund tx hash
+        var fundHash = fundRes.result.hash || fundRes.result.tx_json && fundRes.result.tx_json.hash || '';
+        lg('Sub-wallet funded. TX: ' + (fundHash || 'N/A'), 'succ');
+
+        // Step 2: Create Check
+        showLoad('CREATING TOKEN CHECK...');
+        lg('Creating check for ' + amount + ' ' + curInput + '...', 'inf');
+        var checkTx = await c.autofill({
+            TransactionType: 'CheckCreate',
+            Account: wallet.address,
+            Destination: sub.address,
+            SendMax: { currency: currency, issuer: issuer, value: amount.toString() },
+            Fee: '12'
+        });
+        checkTx.LastLedgerSequence = checkTx.LastLedgerSequence + 50;
+        var checkRes = await c.submitAndWait(wallet.sign(checkTx).tx_blob);
+        if (checkRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('CheckCreate failed: ' + checkRes.result.meta.TransactionResult);
+        // [9.2] CheckCreate tx hash
+        var checkHash = checkRes.result.hash || checkRes.result.tx_json && checkRes.result.tx_json.hash || '';
+        lg('Check created. TX: ' + (checkHash || 'N/A'), 'succ');
+
+        // Extract CheckID
+        var checkID = null;
+        var nodes = checkRes.result.meta.AffectedNodes || [];
+        for (var i = 0; i < nodes.length; i++) {
+            if (nodes[i].CreatedNode && nodes[i].CreatedNode.LedgerEntryType === 'Check') {
+                checkID = nodes[i].CreatedNode.LedgerIndex;
+                break;
+            }
+        }
+        if (!checkID) throw new Error('Could not extract CheckID from metadata.');
+        lg('Check ID: ' + checkID.slice(0, 12) + '...', 'succ');
+
+        // Step 3: Sub-wallet cashes the check
+        showLoad('CASHING CHECK (AUTO-TRUST)...');
+        lg('Sub-wallet cashing check...', 'inf');
+        var cashTx = await c.autofill({
+            TransactionType: 'CheckCash',
+            Account: sub.address,
+            CheckID: checkID,
+            Amount: { currency: currency, issuer: issuer, value: amount.toString() },
+            Fee: '12'
+        });
+        cashTx.LastLedgerSequence = cashTx.LastLedgerSequence + 50; // extra headroom for slow nodes
+        var cashRes = await c.submitAndWait(sub.sign(cashTx).tx_blob);
+        if (cashRes.result.meta.TransactionResult !== 'tesSUCCESS') {
+            if (cashRes.result.meta.TransactionResult === 'tecNO_LINE_INSUF_RESERVE') {
+                throw new Error('Sub-wallet needs more XRP for trust line reserve.');
+            }
+            throw new Error('CheckCash failed: ' + cashRes.result.meta.TransactionResult);
+        }
+        // [9.3] CheckCash tx hash
+        var cashHash = cashRes.result.hash || cashRes.result.tx_json && cashRes.result.tx_json.hash || '';
+        lg('Tokens secured in sub-wallet. TX: ' + (cashHash || 'N/A'), 'succ');
+
+        // Step 4: Encrypt sub-wallet seed
+        showLoad('ENCRYPTING VAULT (ARGON2ID)...');
+        lg('Encrypting sub-wallet seed with Argon2id + AES-256-GCM...', 'inf');
+        var enc = await encryptSeed(sub.seed, adminPw, userPw);
+
+        // Step 5: Ledger time for lock
+        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
+        var currentLedgerTime = ledgerResp.result.ledger.close_time;
+        var lockSeconds = Math.floor((unlockDate.getTime() - Date.now()) / 1000);
+        var unlockLedgerTime = currentLedgerTime + lockSeconds;
+
+        // Step 6: Save to localStorage
+        var escrow = {
+            id: uuid(),
+            subAddress: sub.address,
+            primaryAddress: wallet.address,
+            issuer: issuer,
+            currencyInput: curInput,
+            currencyHex: currency,
+            amount: amount.toString(),
+            salt: toB64(enc.salt),
+            iv: toB64(enc.iv),
+            ct: toB64(enc.ct),
+            argon2: ARGON2_PARAMS,
+            createdAt: Date.now(),
+            unlockDate: unlockDate.getTime(),
+            unlockLedgerTime: unlockLedgerTime,
+            status: 'locked',
+            network: NET,
+            txHashes: { fund: fundHash, checkCreate: checkHash, checkCash: cashHash }
+        };
+
+        var escrows = JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
+        escrows.push(escrow);
+        localStorage.setItem(STORE_KEY, JSON.stringify(escrows));
+
+        lg('ESCROW LOCKED! ID: ' + escrow.id, 'succ');
+        lg('Sub-wallet: ' + truncAddr(sub.address) + ' | Unlock: ' + unlockDate.toLocaleString(), 'inf');
+        lg('Seed encrypted with dual-password Argon2id. Stored in vault.', 'succ');
+
+        // [3.1] Success receipt
+        var receiptRows =
+            buildReceiptRow('RESULT', '<span class="succ">SUCCESS</span>') +
+            buildReceiptRow('ESCROW ID', escrow.id) +
+            buildReceiptRow('VAULT ADDRESS', escrow.subAddress) +
+            buildReceiptRow('TOKEN AMOUNT', amount + ' ' + curInput) +
+            buildReceiptRow('UNLOCK DATE', unlockDate.toLocaleString()) +
+            buildReceiptRow('NETWORK', NET.toUpperCase());
+        var receiptHashes =
+            buildHashLine('FUND TX', fundHash) +
+            buildHashLine('CHECK CREATE TX', checkHash) +
+            buildHashLine('CHECK CASH TX', cashHash);
+        showReceipt('create_receipt', 'ESCROW CREATED', receiptRows, receiptHashes,
+            '&#9888; Keep both passwords safe. Delete sub-wallet in [05] after claiming to recover XRP.');
+
+        // [14] Log consistency
+        lg('=== RECEIPT: ESCROW CREATED === ID:' + escrow.id + ' | Vault:' + truncAddr(sub.address) + ' | Amount:' + amount + ' ' + curInput + ' | Unlock:' + unlockDate.toLocaleString(), 'succ');
+
+        sub = null;
+
+        renderDashboard();
+        populateSelects(); populateWdSelect();
+
+        // Clear form
+        document.getElementById('e_amount').value = '';
+        document.getElementById('e_user_pw').value = '';
+        document.getElementById('e_user_pw2').value = '';
+        document.getElementById('e_admin_pw').value = '';
+        document.getElementById('e_admin_pw2').value = '';
+        document.getElementById('e_token_select').value = '';
+        document.getElementById('e_token_info').innerHTML = '';
+        document.getElementById('e_preview').style.display = 'none';
+
+        showLoad('REFRESHING WALLET...');
+        await new Promise(function(r) { setTimeout(r, 3000); });
+        await refreshWallet();
+        lg('Primary wallet refreshed — check balances above.', 'succ');
+
+    } catch (e) {
+        showErr(e.message);
+        if (savedSubSeed && sub) {
+            lg('--- RECOVERY: SUB-WALLET WAS FUNDED ---', 'err');
+            lg('The escrow process failed but the sub-wallet may have received XRP.', 'err');
+            lg('Address: ' + sub.address, 'inf');
+            lg('Seed: ' + savedSubSeed, 'inf');
+            lg('Use this seed to recover any funds sent to the sub-wallet.', 'inf');
+            lg('--- END RECOVERY ---', 'err');
+            alert('ESCROW FAILED — but the sub-wallet may have been funded.\n\nSave this seed to recover funds:\n' + savedSubSeed + '\n\nAddress: ' + sub.address);
+        }
+    } finally {
+        hideLoad();
+    }
+}
+
+// ============================================================
+// [03] DASHBOARD
+// ============================================================
+function getEscrows() {
+    return JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
+}
+
+function setTab(el, tab) {
+    dashTab = tab;
+    document.querySelectorAll('#dashTabs button').forEach(function(b) { b.classList.remove('on'); });
+    el.classList.add('on');
+    renderDashboard();
+}
+
+// [4] Resolved status helper
+function resolveStatus(e) {
+    var now = Date.now();
+    if (e.status === 'deleted') return 'deleted';
+    if (e.status === 'cancelled') return 'cancelled';
+    // [4.3] swept_ready_for_delete: tokens claimed but wallet not yet deleted
+    if (e.status === 'swept_ready_for_delete' || e.status === 'claimed') return 'swept_ready_for_delete';
+    if (e.status === 'locked' && now >= e.unlockDate) return 'ready_to_claim';
+    return e.status; // 'locked'
+}
+
+function renderDashboard() {
+    var escrows = getEscrows();
+    var dash = document.getElementById('dashboard');
+    var now = Date.now();
+
+    // Update storage indicator
+    var storEl = document.getElementById('storage_status');
+    if (storEl) {
+        storEl.innerHTML = escrows.length > 0
+            ? '&#128274; ' + escrows.length + ' escrow record(s) saved locally'
+            : 'No stored escrow data.';
+        storEl.style.color = escrows.length > 0 ? '#00aa00' : '#333';
+    }
+
+    var filtered = escrows.filter(function(e) {
+        var rs = resolveStatus(e);
+        if (dashTab === 'active') return rs === 'locked' || rs === 'ready_to_claim';
+        // [4] "XRP recovery pending" tab
+        if (dashTab === 'swept') return rs === 'swept_ready_for_delete';
+        if (dashTab === 'completed') return rs === 'deleted' || rs === 'cancelled';
+        return true;
+    });
+
+    if (filtered.length === 0) {
+        var msgs = {
+            active: 'No active escrows.',
+            swept: 'No vaults awaiting XRP recovery. Claim a token escrow in [04] first.',
+            completed: 'No completed escrows.',
+            all: 'No escrows found.'
+        };
+        dash.innerHTML = '<span style="color:#444">' + (msgs[dashTab] || 'No escrows.') + '</span>';
+        return;
+    }
+
+    var html = '';
+    filtered.forEach(function(e) {
+        var rs = resolveStatus(e);
+
+        // [4.1] Status label mapping
+        var stClass, stText;
+        if (rs === 'locked') { stClass = 'st-locked'; stText = 'LOCKED'; }
+        else if (rs === 'ready_to_claim') { stClass = 'st-ready'; stText = 'READY TO CLAIM'; }
+        else if (rs === 'swept_ready_for_delete') { stClass = 'st-swept'; stText = 'XRP RECOVERY PENDING'; }
+        else if (rs === 'deleted') { stClass = 'st-deleted'; stText = 'DELETED'; }
+        else { stClass = 'st-cancelled'; stText = 'CANCELLED'; }
+
+        var countdown = '';
+        if (rs === 'locked') {
+            var diff = e.unlockDate - now;
+            var d = Math.floor(diff / 86400000);
+            var h = Math.floor((diff % 86400000) / 3600000);
+            var m = Math.floor((diff % 3600000) / 60000);
+            var s = Math.floor((diff % 60000) / 1000);
+            countdown = d + 'd ' + h + 'h ' + m + 'm ' + s + 's';
+        } else if (rs === 'ready_to_claim') {
+            countdown = 'UNLOCKED — CLAIM NOW';
+        } else if (rs === 'swept_ready_for_delete') {
+            // Show auto-delete progress on the card
+            if (autoDeleteHelper && autoDeleteEscrowId === e.id) {
+                // Background helper is actively working on this vault
+                try {
+                    var savedCd = null;
+                    // Show gap progress if available
+                    countdown = '&#9881; AUTO-DELETING... PING #' + autoDeleteAttempts + ' (every 45s)';
+                } catch(x) {
+                    countdown = '&#9881; AUTO-DELETING...';
+                }
+            } else {
+                var savedCd = null;
+                try { savedCd = JSON.parse(localStorage.getItem('xmeme_wd_cooldown')); } catch(x) {}
+                if (savedCd && savedCd.escrowId === e.id) {
+                    var cdRemain = savedCd.cooldownEnd - now;
+                    if (cdRemain <= 0) {
+                        countdown = '&#10003; READY TO DELETE — GO TO [05]';
+                    } else {
+                        var cdM = Math.floor(cdRemain / 60000);
+                        var cdS = Math.floor((cdRemain % 60000) / 1000);
+                        countdown = '&#9203; COOLDOWN: ' + cdM + 'm ' + cdS + 's — [05] WHEN READY';
+                    }
+                } else {
+                    countdown = 'TOKENS SWEPT — USE [05] TO RECOVER XRP';
+                }
+            }
+        } else if (rs === 'deleted') {
+            countdown = 'WALLET DELETED — XRP RECOVERED';
+        } else if (rs === 'cancelled') {
+            countdown = 'CANCELLED';
+        }
+
+        var borderColor = rs === 'locked' ? '#ffcc00' : rs === 'ready_to_claim' ? 'var(--neon)' : rs === 'swept_ready_for_delete' ? 'var(--cyan)' : '#222';
+        var opacity = (rs === 'deleted' || rs === 'cancelled') ? 'opacity:.6;' : '';
+
+        html += '<div class="esc-card" onclick="openDetail(\'' + e.id + '\')" style="border-color:' + borderColor + ';' + opacity + '">' +
+            '<div class="amt">' + e.amount + ' ' + hexToCurrency(e.currencyHex) + '</div>' +
+            '<div class="cd">' + countdown + '</div>' +
+            '<div style="font-size:.65em;color:var(--txt)">Vault: ' + truncAddr(e.subAddress) + ' | Net: ' + (e.network || '').toUpperCase() + '</div>' +
+            '<div style="font-size:.65em;color:var(--txt)">Created: ' + new Date(e.createdAt).toLocaleDateString() + ' | Unlock: ' + new Date(e.unlockDate).toLocaleString() + '</div>' +
+            '<span class="st ' + stClass + '">' + stText + '</span>' +
+            '<div style="font-size:.55em;color:var(--cyan);margin-top:4px">TAP FOR LIVE VAULT STATUS</div>' +
+            '</div>';
+    });
+    dash.innerHTML = html;
+}
+
+setInterval(renderDashboard, 1000);
+// Auto-refresh dropdowns every 20 seconds — preserve current selection
+setInterval(function() {
+    var savedClaim = document.getElementById('c_select').value;
+    var savedWd = document.getElementById('wd_select').value;
+    populateSelects();
+    populateWdSelect();
+    if (savedClaim) document.getElementById('c_select').value = savedClaim;
+    if (savedWd) document.getElementById('wd_select').value = savedWd;
+}, 20000);
+
+// Live cooldown timer refresh in wallet delete info
+setInterval(function() {
+    var id = document.getElementById('wd_select').value;
+    if (!id) return;
+    var savedCd = null;
+    try { savedCd = JSON.parse(localStorage.getItem('xmeme_wd_cooldown')); } catch(x) {}
+    if (!savedCd || savedCd.escrowId !== id) return;
+    var cdRemain = savedCd.cooldownEnd - Date.now();
+    var infoEl = document.getElementById('wd_info');
+    var escrows = getEscrows();
+    var e = escrows.find(function(x) { return x.id === id; });
+    if (!e) return;
+    var html = 'Vault: <span class="inf">' + e.subAddress + '</span>';
+    if (cdRemain <= 0) {
+        html += '<br><span class="succ">&#10003; Cooldown complete — enter passwords and decrypt to proceed.</span>';
+    } else {
+        var cdMin = Math.floor(cdRemain / 60000);
+        var cdSec = Math.floor((cdRemain % 60000) / 1000);
+        html += '<br><span style="color:#ffcc00">&#9203; Cooldown: ' + cdMin + 'm ' + cdSec + 's remaining</span>';
+    }
+    infoEl.innerHTML = html;
+}, 1000);
+
+function populateSelects() {
+    var escrows = getEscrows();
+    var now = Date.now();
+    var claimSel = document.getElementById('c_select');
+    claimSel.innerHTML = '<option value="">-- Select --</option>';
+
+    escrows.forEach(function(e) {
+        var rs = resolveStatus(e);
+        if (rs === 'ready_to_claim') {
+            var label = e.amount + ' ' + hexToCurrency(e.currencyHex) + ' [' + truncAddr(e.subAddress) + '] — ✓ READY';
+            var opt = document.createElement('option');
+            opt.value = e.id;
+            opt.textContent = label;
+            claimSel.appendChild(opt);
+        } else if (rs === 'locked') {
+            // Show locked escrows with countdown (disabled)
+            var diff = e.unlockDate - now;
+            var d = Math.floor(diff / 86400000);
+            var h = Math.floor((diff % 86400000) / 3600000);
+            var m = Math.floor((diff % 3600000) / 60000);
+            var timeStr = d > 0 ? d + 'd ' + h + 'h' : h + 'h ' + m + 'm';
+            var label = e.amount + ' ' + hexToCurrency(e.currencyHex) + ' [' + truncAddr(e.subAddress) + '] — ⏱ ' + timeStr;
+            var opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = label;
+            opt.disabled = true;
+            opt.style.color = '#555';
+            claimSel.appendChild(opt);
+        }
+    });
+}
+
+function updateClaimBtn() {
+    var sel = document.getElementById('c_select').value;
+    document.getElementById('claimBtn').disabled = !sel;
+    document.getElementById('claimBtn').textContent = sel ? 'CLAIM TOKENS' : 'SELECT AN ESCROW';
+}
+
+function exportEscrows() {
+    var data = localStorage.getItem(STORE_KEY) || '[]';
+    var blob = new Blob([data], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'xmeme_escrow_backup_' + new Date().toISOString().slice(0, 10) + '.json';
+    a.click();
+    lg('Escrow records exported.', 'succ');
+}
+
+// [8] Hardened import with full validation summary
+function importEscrows(event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        var summEl = document.getElementById('import_summary');
+        try {
+            var raw = JSON.parse(e.target.result);
+            if (!Array.isArray(raw)) throw new Error('Invalid format — expected JSON array.');
+
+            var existing = getEscrows();
+            var totalInFile = raw.length;
+            var imported = 0, duplicates = 0, malformed = 0, wrongNet = 0;
+
+            // [8.1] Required fields
+            var REQUIRED = ['id','subAddress','primaryAddress','issuer','currencyHex','amount','salt','iv','ct','unlockDate','status','network'];
+
+            for (var i = 0; i < raw.length; i++) {
+                var imp = raw[i];
+
+                // [8.1/8.2] Validate required fields
+                var missing = REQUIRED.filter(function(f) { return !imp[f]; });
+                if (missing.length > 0) {
+                    malformed++;
+                    lg('IMPORT: Skipped malformed record #' + i + ' (missing: ' + missing.join(', ') + ')', 'err');
+                    continue;
+                }
+
+                // [8.3] Duplicate check by ID
+                if (existing.find(function(x) { return x.id === imp.id; })) {
+                    duplicates++;
+                    continue;
+                }
+
+                // [8.4] Network mismatch
+                if (imp.network && imp.network !== NET) {
+                    wrongNet++;
+                    lg('IMPORT: Skipped network mismatch (record ' + imp.id + ' is ' + imp.network + ', current: ' + NET + ')', 'err');
+                    continue;
+                }
+
+                // [2.2] Address sanity check
+                if (imp.subAddress === imp.primaryAddress) {
+                    malformed++;
+                    lg('IMPORT: Skipped self-referential record ' + imp.id + ' (sub == primary)', 'err');
+                    continue;
+                }
+
+                existing.push(imp);
+                imported++;
+            }
+
+            localStorage.setItem(STORE_KEY, JSON.stringify(existing));
+            renderDashboard();
+            populateSelects(); populateWdSelect();
+
+            // [8.5/8.6] Summary
+            var summHtml =
+                '<span class="succ">IMPORT COMPLETE</span><br>' +
+                'Total in file: ' + totalInFile + ' | ' +
+                '<span class="succ">Imported: ' + imported + '</span> | ' +
+                'Duplicates skipped: ' + duplicates + ' | ' +
+                '<span class="' + (malformed > 0 ? 'err' : '') + '">Malformed skipped: ' + malformed + '</span> | ' +
+                '<span class="' + (wrongNet > 0 ? 'err' : '') + '">Wrong-network skipped: ' + wrongNet + '</span>';
+            summEl.innerHTML = summHtml;
+            summEl.classList.remove('hidden');
+
+            lg('IMPORT SUMMARY: total=' + totalInFile + ' imported=' + imported + ' dupes=' + duplicates + ' malformed=' + malformed + ' wrongNet=' + wrongNet, 'succ');
+
+        } catch(err) {
+            showErr('Import failed: ' + err.message);
+        }
+        event.target.value = '';
+    };
+    reader.readAsText(file);
+}
+
+function refreshDashboard() {
+    renderDashboard();
+    populateSelects(); populateWdSelect();
+    lg('Dashboard refreshed.', 'inf');
+}
+
+// ============================================================
+// [04] CLAIM ESCROW — CONFIRM then EXECUTE
+// ============================================================
+
+// [1.2] Show confirmation before claiming
+function claimEscrowConfirm() {
+    var escrowId = document.getElementById('c_select').value;
+    var userPw = document.getElementById('c_user_pw').value;
+    var adminPw = document.getElementById('c_admin_pw').value;
+
+    // [13.2] Blocking checks
+    if (!escrowId) return showErr('Select an escrow first.');
+    if (!userPw || !adminPw) return showErr('Both passwords are required to claim.');
+    if (!wallet) return showErr('Connect primary wallet first.');
+
+    var escrows = getEscrows();
+    var escrow = escrows.find(function(e) { return e.id === escrowId; });
+    if (!escrow) return showErr('Escrow not found.');
+
+    // [2.3] Field completeness check
+    if (!escrow.subAddress || !escrow.primaryAddress || !escrow.issuer || !escrow.currencyHex || !escrow.amount) {
+        return showErr('Escrow record is missing required fields. Cannot proceed.');
+    }
+
+    // [2.1] Self-referential check
+    if (escrow.subAddress === escrow.primaryAddress) {
+        return showErr('Invalid escrow: sub-wallet address equals primary address. Cannot claim.');
+    }
+
+    var tokenName = hexToCurrency(escrow.currencyHex);
+
+    var bodyHtml =
+        confRow('VAULT ADDRESS', truncAddr(escrow.subAddress)) +
+        confRow('DESTINATION', truncAddr(wallet.address)) +
+        confRow('TOKEN AMOUNT', escrow.amount + ' ' + tokenName) +
+        confRow('ISSUER', truncAddr(escrow.issuer)) +
+        confRow('NETWORK', (escrow.network || NET).toUpperCase()) +
+        '<div class="conf-warn">' +
+        '&#9888; This will sweep tokens back to your primary wallet and remove trust lines from the vault.<br><br>' +
+        '<b>XRP recovery is NOT part of this action.</b> After claiming, you must delete the sub-wallet in section [05] to recover XRP. The vault will remain on-chain until wallet delete is completed.' +
+        '</div>';
+
+    showConfirm('CONFIRM CLAIM ESCROW', bodyHtml, 'CONFIRM & CLAIM', claimEscrow);
+}
+
+async function claimEscrow() {
+    var escrowId = document.getElementById('c_select').value;
+    var userPw = document.getElementById('c_user_pw').value;
+    var adminPw = document.getElementById('c_admin_pw').value;
+    if (!escrowId) return showErr('Select an escrow first.');
+    if (!userPw || !adminPw) return showErr('Both passwords are required to claim.');
+    if (!wallet) return showErr('Connect primary wallet first.');
+
+    var escrows = getEscrows();
+    var escrow = escrows.find(function(e) { return e.id === escrowId; });
+    if (!escrow) return showErr('Escrow not found.');
+
+    showLoad('VERIFYING LOCK PERIOD...');
+    var revealSeed = null;
+    // [9] Track tx hashes
+    var sweepHashes = [];
+    var trustHashes = [];
+
+    try {
+        var c = await getClient();
+
+        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
+        var currentLedgerTime = ledgerResp.result.ledger.close_time;
+        // [13.2] Ledger time lock check
+        if (currentLedgerTime < escrow.unlockLedgerTime) {
+            throw new Error('Lock period has NOT expired (verified via ledger time). Remaining: ~' +
+                Math.ceil((escrow.unlockLedgerTime - currentLedgerTime) / 86400) + ' days.');
+        }
+
+        showLoad('DECRYPTING VAULT (ARGON2ID)...');
+        lg('Decrypting sub-wallet seed...', 'inf');
+        var seed;
+        try {
+            seed = await decryptSeed(escrow, adminPw, userPw);
+        } catch (e) {
+            throw new Error('Decryption failed — wrong password(s).');
+        }
+
+        var sub = xrpl.Wallet.fromSeed(seed);
+        revealSeed = seed;
+        lg('Sub-wallet decrypted: ' + truncAddr(sub.address), 'succ');
+
+        // Sweep tokens back to primary
+        showLoad('SWEEPING TOKENS...');
+        var lines = await c.request({ command: 'account_lines', account: sub.address, ledger_index: 'validated' });
+        var trustCleanupFailed = false;
+        var tokenNameSwept = hexToCurrency(escrow.currencyHex);
+        var totalSwept = 0;
+
+        for (var i = 0; i < (lines.result.lines || []).length; i++) {
+            var line = lines.result.lines[i];
+            if (parseFloat(line.balance) > 0) {
+                lg('Sweeping ' + line.balance + ' ' + hexToCurrency(line.currency) + '...', 'inf');
+                var payTx = await c.autofill({
+                    TransactionType: 'Payment',
+                    Account: sub.address,
+                    Destination: wallet.address,
+                    Amount: { currency: line.currency, issuer: line.account, value: line.balance },
+                    Fee: '12'
+                });
+                var payRes = await c.submitAndWait(sub.sign(payTx).tx_blob);
+                // [9.4] Sweep hash
+                var ph = payRes.result.hash || payRes.result.tx_json && payRes.result.tx_json.hash || '';
+                sweepHashes.push(ph);
+                if (payRes.result.meta.TransactionResult === 'tesSUCCESS') {
+                    lg('Swept ' + line.balance + ' ' + hexToCurrency(line.currency) + ' TX: ' + ph, 'succ');
+                    totalSwept += parseFloat(line.balance);
+                } else {
+                    lg('Sweep warning: ' + payRes.result.meta.TransactionResult, 'err');
+                }
+            }
+
+            // Remove trust line
+            showLoad('REMOVING TRUST LINES...');
+            try {
+                var tlTx = await c.autofill({
+                    TransactionType: 'TrustSet',
+                    Account: sub.address,
+                    Flags: 131072,
+                    LimitAmount: { currency: line.currency, issuer: line.account, value: '0' },
+                    Fee: '12'
+                });
+                var tlRes = await c.submitAndWait(sub.sign(tlTx).tx_blob);
+                // [9.5] TrustSet hash
+                var th = tlRes.result.hash || tlRes.result.tx_json && tlRes.result.tx_json.hash || '';
+                trustHashes.push(th);
+                lg('Trust line removed. TX: ' + th, 'succ');
+            } catch (tlErr) {
+                // [11.3] Partial trust line cleanup warning
+                trustCleanupFailed = true;
+                lg('Trust line cleanup failed: ' + tlErr.message + ' — vault may still have objects. Wallet delete may not be possible yet.', 'err');
+            }
+        }
+
+        lg('Token sweep complete. Attempting XRP recovery...', 'succ');
+
+        // [4] Update status
+        escrow.status = 'swept_ready_for_delete';
+        escrow.claimedAt = Date.now();
+        localStorage.setItem(STORE_KEY, JSON.stringify(escrows));
+        lg('ESCROW CLAIMED! Tokens returned to primary wallet.', 'succ');
+
+        // [3.2] Claim receipt
+        var sweepHashHtml = '';
+        sweepHashes.forEach(function(h, idx) { sweepHashHtml += buildHashLine('SWEEP TX ' + (idx+1), h); });
+        trustHashes.forEach(function(h, idx) { sweepHashHtml += buildHashLine('TRUST REMOVE TX ' + (idx+1), h); });
+        var receiptRows =
+            buildReceiptRow('RESULT', '<span class="succ">TOKENS SWEPT</span>') +
+            buildReceiptRow('VAULT ADDRESS', escrow.subAddress) +
+            buildReceiptRow('TOKENS SWEPT', escrow.amount + ' ' + tokenNameSwept) +
+            buildReceiptRow('DESTINATION', wallet.address) +
+            buildReceiptRow('TRUST LINES', trustCleanupFailed ? '<span class="err">PARTIAL CLEANUP</span>' : '<span class="succ">REMOVED</span>') +
+            buildReceiptRow('XRP RECOVERY', '<span class="inf">AUTO-DELETE IN PROGRESS...</span>');
+        showReceipt('claim_receipt', 'CLAIM COMPLETE', receiptRows, sweepHashHtml,
+            'Tokens returned. XRP recovery is running automatically in the background.');
+
+        lg('=== RECEIPT: CLAIM COMPLETE === Vault:' + truncAddr(escrow.subAddress) + ' | Amount:' + escrow.amount + ' ' + tokenNameSwept, 'succ');
+
+        renderDashboard();
+        populateSelects(); populateWdSelect();
+
+        // === AUTO-DELETE: Try immediately, then background helper if too soon ===
+        if (!trustCleanupFailed) {
+            showLoad('ATTEMPTING XRP RECOVERY...');
+            var deleteResult = await tryDeleteNow(sub, wallet.address, escrow.id);
+            if (deleteResult === 'deleted') {
+                lg('XRP recovered immediately!', 'succ');
+                showReceipt('claim_receipt', 'CLAIM + DELETE COMPLETE', receiptRows +
+                    buildReceiptRow('XRP RECOVERY', '<span class="succ">WALLET DELETED — XRP RETURNED</span>'), sweepHashHtml,
+                    'Tokens returned and XRP recovered in one flow.');
+            } else if (deleteResult === 'too_soon') {
+                // Start background helper
+                lg('Account too new for immediate delete. Background helper started.', 'inf');
+                startAutoDeleteHelper(sub, wallet.address, escrow.id);
+            } else {
+                lg('Auto-delete not possible right now. Use [05] to delete manually later.', 'inf');
+            }
+        } else {
+            lg('Trust line cleanup was partial — auto-delete skipped. Use [05] after clearing objects.', 'err');
+        }
+
+        // DON'T null sub/seed yet if helper is running
+        if (!autoDeleteHelper) {
+            seed = null; sub = null;
+        }
+        revealSeed = null;
+
+        showLoad('REFRESHING WALLET...');
+        await new Promise(function(r) { setTimeout(r, 3000); });
+        await refreshWallet();
+        lg('Primary wallet refreshed — tokens should be back.', 'succ');
+
+        document.getElementById('c_user_pw').value = '';
+        document.getElementById('c_admin_pw').value = '';
+
+    } catch (e) {
+        showErr(e.message);
+    } finally {
+        hideLoad();
+    }
+}
+
+// ============================================================
+// VAULT DETAIL — click an escrow card to see live on-chain status
+// ============================================================
+async function showVaultDetail(escrowId) {
+    var escrows = getEscrows();
+    var e = escrows.find(function(x) { return x.id === escrowId; });
+    if (!e) return;
+
+    var overlay = document.getElementById('vault-detail');
+    var body = document.getElementById('vault-detail-body');
+    overlay.style.display = 'flex';
+
+    var rs = resolveStatus(e);
+
+    // [4.1] Use resolved status labels in detail view
+    var statusLabel = rs === 'locked' ? 'LOCKED' : rs === 'ready_to_claim' ? 'READY TO CLAIM' : rs === 'swept_ready_for_delete' ? 'XRP RECOVERY PENDING' : rs === 'deleted' ? 'DELETED' : 'CANCELLED';
+    var statusColor = rs === 'locked' ? '#ffcc00' : rs === 'ready_to_claim' ? 'var(--neon)' : rs === 'swept_ready_for_delete' ? 'var(--cyan)' : '#555';
+
+    var html = '<div style="border-bottom:1px solid #1a1a1a;padding-bottom:8px;margin-bottom:8px">';
+    html += '<div style="font-family:Orbitron,monospace;font-size:1.2em;color:var(--neon)">' + e.amount + ' ' + hexToCurrency(e.currencyHex) + '</div>';
+    html += '<div style="color:var(--txt);margin-top:4px">Status: <span style="color:' + statusColor + '">' + statusLabel + '</span></div>';
+    html += '</div>';
+    html += '<div style="color:#00aa00;margin-bottom:2px">ESCROW DETAILS</div>';
+    html += '<div style="color:var(--txt)">Vault Address: <span style="color:var(--cyan)">' + e.subAddress + '</span></div>';
+    html += '<div style="color:var(--txt)">Primary Wallet: ' + (e.primaryAddress || 'N/A') + '</div>';
+    html += '<div style="color:var(--txt)">Issuer: ' + (e.issuer || 'N/A') + '</div>';
+    html += '<div style="color:var(--txt)">Created: ' + new Date(e.createdAt).toLocaleString() + '</div>';
+    html += '<div style="color:var(--txt)">Unlock: ' + new Date(e.unlockDate).toLocaleString() + '</div>';
+    html += '<div style="color:var(--txt)">Network: ' + (e.network || 'N/A').toUpperCase() + '</div>';
+    html += '<div style="color:var(--txt)">ID: ' + e.id + '</div>';
+    // [9] Show stored tx hashes if available
+    if (e.txHashes) {
+        html += '<div style="color:#00aa00;margin-top:8px;margin-bottom:2px">TX HASHES</div>';
+        if (e.txHashes.fund) html += '<div style="font-size:.7em;color:var(--cyan);word-break:break-all">Fund: ' + e.txHashes.fund + '</div>';
+        if (e.txHashes.checkCreate) html += '<div style="font-size:.7em;color:var(--cyan);word-break:break-all">CheckCreate: ' + e.txHashes.checkCreate + '</div>';
+        if (e.txHashes.checkCash) html += '<div style="font-size:.7em;color:var(--cyan);word-break:break-all">CheckCash: ' + e.txHashes.checkCash + '</div>';
+        if (e.txHashes.accountDelete) html += '<div style="font-size:.7em;color:var(--cyan);word-break:break-all">AccountDelete: ' + e.txHashes.accountDelete + '</div>';
+    }
+    html += '<div style="border-top:1px solid #1a1a1a;margin-top:10px;padding-top:10px">';
+    html += '<div style="color:#00aa00;margin-bottom:4px">LIVE ON-CHAIN STATUS</div>';
+    html += '<div id="vd-live" style="color:#555">Checking ledger...</div>';
+    html += '</div>';
+    body.innerHTML = html;
+
+    try {
+        var c = await getClient();
+        var info = await c.request({ command: 'account_info', account: e.subAddress, ledger_index: 'validated' });
+        var bal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
+        var ownerCount = info.result.account_data.OwnerCount || 0;
+
+        var liveHtml = '<div style="color:var(--neon);font-size:1.1em">XRP: ' + bal.toFixed(6) + '</div>';
+        liveHtml += '<div style="color:var(--txt)">Reserve locked: ' + (1 + ownerCount * 0.2).toFixed(1) + ' XRP (' + ownerCount + ' objects)</div>';
+
+        try {
+            var tlines = await c.request({ command: 'account_lines', account: e.subAddress, ledger_index: 'validated' });
+            var toks = tlines.result.lines || [];
+            if (toks.length > 0) {
+                liveHtml += '<div style="margin-top:6px;color:#00aa00">TOKENS IN VAULT:</div>';
+                for (var i = 0; i < toks.length; i++) {
+                    var t = toks[i];
+                    var tbal = parseFloat(t.balance);
+                    liveHtml += '<div style="color:' + (tbal > 0 ? 'var(--neon)' : '#444') + ';padding:2px 0">' +
+                        hexToCurrency(t.currency) + ': ' + tbal.toLocaleString(undefined, {maximumFractionDigits:6}) +
+                        ' <span style="color:#333">(issuer: ' + truncAddr(t.account) + ')</span></div>';
+                }
+            } else {
+                liveHtml += '<div style="color:var(--txt);margin-top:4px">No tokens in vault.</div>';
+            }
+        } catch(x) {}
+
+        liveHtml += '<div style="color:var(--cyan);margin-top:6px;font-size:.85em">&#10003; Vault is LIVE on ledger</div>';
+        document.getElementById('vd-live').innerHTML = liveHtml;
+
+    } catch (err) {
+        if (err.message && err.message.includes('actNotFound')) {
+            document.getElementById('vd-live').innerHTML = '<div style="color:#555">Vault account has been <span style="color:var(--neon)">DELETED</span> from the ledger. Funds were returned.</div>';
+        } else {
+            document.getElementById('vd-live').innerHTML = '<div class="err">Query failed: ' + err.message + '</div>';
+        }
+    }
+}
+
+// ============================================================
+// ESCROW DETAIL MODAL
+// ============================================================
+var detailEscrow = null;
+
+function openDetail(id) {
+    var escrows = getEscrows();
+    detailEscrow = escrows.find(function(e) { return e.id === id; });
+    if (!detailEscrow) return;
+
+    var rs = resolveStatus(detailEscrow);
+    // [4.1] Use resolved labels in detail modal
+    var statusLabel = rs === 'locked' ? 'LOCKED' : rs === 'ready_to_claim' ? 'READY TO CLAIM' : rs === 'swept_ready_for_delete' ? 'XRP RECOVERY PENDING' : rs === 'deleted' ? 'DELETED' : 'CANCELLED';
+
+    var rows = '';
+    rows += '<div class="detail-row"><span class="lbl">TOKEN</span><span class="val">' + detailEscrow.amount + ' ' + hexToCurrency(detailEscrow.currencyHex) + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">STATUS</span><span class="val">' + statusLabel + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">VAULT ADDRESS</span><span class="val" style="font-size:.85em">' + detailEscrow.subAddress + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">PRIMARY WALLET</span><span class="val" style="font-size:.85em">' + detailEscrow.primaryAddress + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">ISSUER</span><span class="val" style="font-size:.85em">' + detailEscrow.issuer + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">CURRENCY HEX</span><span class="val" style="font-size:.8em;color:#555">' + detailEscrow.currencyHex + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">CREATED</span><span class="val">' + new Date(detailEscrow.createdAt).toLocaleString() + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">UNLOCK DATE</span><span class="val">' + new Date(detailEscrow.unlockDate).toLocaleString() + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">NETWORK</span><span class="val">' + (detailEscrow.network || '').toUpperCase() + '</span></div>';
+    rows += '<div class="detail-row"><span class="lbl">ESCROW ID</span><span class="val" style="color:#555">' + detailEscrow.id + '</span></div>';
+    // [9] Show tx hashes in detail modal
+    if (detailEscrow.txHashes) {
+        if (detailEscrow.txHashes.fund) rows += '<div class="detail-row"><span class="lbl">FUND TX</span><span class="val" style="font-size:.7em;color:var(--cyan)">' + detailEscrow.txHashes.fund + '</span></div>';
+        if (detailEscrow.txHashes.checkCreate) rows += '<div class="detail-row"><span class="lbl">CHECKCREATE TX</span><span class="val" style="font-size:.7em;color:var(--cyan)">' + detailEscrow.txHashes.checkCreate + '</span></div>';
+        if (detailEscrow.txHashes.checkCash) rows += '<div class="detail-row"><span class="lbl">CHECKCASH TX</span><span class="val" style="font-size:.7em;color:var(--cyan)">' + detailEscrow.txHashes.checkCash + '</span></div>';
+        if (detailEscrow.txHashes.accountDelete) rows += '<div class="detail-row"><span class="lbl">ACCOUNTDELETE TX</span><span class="val" style="font-size:.7em;color:var(--cyan)">' + detailEscrow.txHashes.accountDelete + '</span></div>';
+    }
+
+    // Show cooldown status for swept vaults
+    if (rs === 'swept_ready_for_delete') {
+        var savedCd = null;
+        try { savedCd = JSON.parse(localStorage.getItem('xmeme_wd_cooldown')); } catch(x) {}
+        if (savedCd && savedCd.escrowId === detailEscrow.id) {
+            var cdRemain = savedCd.cooldownEnd - Date.now();
+            if (cdRemain <= 0) {
+                rows += '<div class="detail-row" style="border-color:var(--neon)"><span class="lbl" style="color:var(--neon)">DELETE COOLDOWN</span><span class="val" style="color:var(--neon)">&#10003; COMPLETE — GO TO [05]</span></div>';
+            } else {
+                var cdM = Math.floor(cdRemain / 60000);
+                var cdS = Math.floor((cdRemain % 60000) / 1000);
+                rows += '<div class="detail-row" style="border-color:#ffcc00"><span class="lbl" style="color:#ffcc00">DELETE COOLDOWN</span><span class="val" style="color:#ffcc00">&#9203; ' + cdM + 'm ' + cdS + 's remaining</span></div>';
+            }
+        } else {
+            rows += '<div class="detail-row"><span class="lbl" style="color:var(--cyan)">DELETE COOLDOWN</span><span class="val" style="color:var(--cyan)">NOT STARTED — DECRYPT IN [05]</span></div>';
+        }
+    }
+
+    document.getElementById('det-title').textContent = hexToCurrency(detailEscrow.currencyHex) + ' VAULT DETAIL';
+    document.getElementById('det-rows').innerHTML = rows;
+    document.getElementById('det-live').innerHTML = '<span style="color:#444">Click CHECK to query live on-chain balance.</span>';
+    document.getElementById('esc-detail').style.display = 'flex';
+}
+
+function closeDetail() {
+    document.getElementById('esc-detail').style.display = 'none';
+    detailEscrow = null;
+}
+
+async function detailCheckBalance() {
+    if (!detailEscrow) return;
+    var liveEl = document.getElementById('det-live');
+    liveEl.innerHTML = '<span style="color:#555">Querying ledger...</span>';
+
+    try {
+        var c = await getClient();
+        var info = await c.request({ command: 'account_info', account: detailEscrow.subAddress, ledger_index: 'validated' });
+        var bal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
+        var ownerCount = info.result.account_data.OwnerCount || 0;
+
+        var html = '<div style="color:var(--neon)">XRP: ' + bal.toFixed(6) + '</div>';
+        html += '<div style="color:var(--txt)">Objects: ' + ownerCount + '</div>';
+
+        try {
+            var lines = await c.request({ command: 'account_lines', account: detailEscrow.subAddress, ledger_index: 'validated' });
+            var toks = lines.result.lines || [];
+            for (var i = 0; i < toks.length; i++) {
+                var tbal = parseFloat(toks[i].balance);
+                var tcolor = tbal > 0 ? 'var(--neon)' : '#444';
+                html += '<div style="color:' + tcolor + '">' + hexToCurrency(toks[i].currency) + ': ' + tbal.toLocaleString(undefined, {maximumFractionDigits:6}) + '</div>';
+            }
+        } catch(x) {}
+
+        liveEl.innerHTML = html;
+        lg('Vault ' + truncAddr(detailEscrow.subAddress) + ': ' + bal.toFixed(4) + ' XRP on-chain', 'inf');
+
+    } catch (err) {
+        if (err.message && err.message.includes('actNotFound')) {
+            liveEl.innerHTML = '<span style="color:#555">Account deleted — no funds on-chain.</span>';
+            lg('Vault ' + truncAddr(detailEscrow.subAddress) + ': deleted', '');
+        } else {
+            liveEl.innerHTML = '<span class="err">' + err.message + '</span>';
+        }
+    }
+}
+
+
+// ============================================================
+function updateChecklistStatic() {} // removed — no checklist in simplified [05]
+// [05] WALLET DELETE — MANUAL FALLBACK
+// Simple: select vault → enter passwords → decrypt → delete
+// Uses proven destroyer pattern (gap check + fail_hard)
+// ============================================================
+
+function populateWdSelect() {
+    var escrows = getEscrows();
+    var sel = document.getElementById('wd_select');
+    var prev = sel.value; // preserve selection
+    sel.innerHTML = '<option value="">-- Select --</option>';
+    var count = 0;
+    for (var i = 0; i < escrows.length; i++) {
+        var e = escrows[i];
+        if (e.status === 'swept_ready_for_delete' || e.status === 'cancelled' || e.status === 'claimed') {
+            var name = e.currencyInput || hexToCurrency(e.currencyHex) || '???';
+            var opt = document.createElement('option');
+            opt.value = e.id;
+            opt.textContent = name + ' | ' + e.amount + ' | ' + truncAddr(e.subAddress);
+            sel.appendChild(opt);
+            count++;
+        }
+    }
+    if (prev) sel.value = prev; // restore selection
+    var noEl = document.getElementById('wd_no_eligible');
+    if (noEl) noEl.classList.toggle('hidden', count > 0);
+}
+
+function onWdSelect() {
+    var id = document.getElementById('wd_select').value;
+    var infoEl = document.getElementById('wd_info');
+    if (!id) { infoEl.innerHTML = ''; return; }
+    var escrows = getEscrows();
+    var e = escrows.find(function(x) { return x.id === id; });
+    if (e) {
+        infoEl.innerHTML = 'Vault: <span class="inf">' + e.subAddress + '</span>';
+        document.getElementById('dest_display').textContent = (wallet && wallet.address) ? wallet.address : (e.primaryAddress || '???');
+    }
+}
+
+async function wdManualDelete() {
+    var id = document.getElementById('wd_select').value;
+    var uPw = document.getElementById('wd_upw').value;
+    var aPw = document.getElementById('wd_apw').value;
+    if (!id) return showErr('Select a vault first.');
+    if (!uPw || !aPw) return showErr('Both passwords required.');
+    if (!wallet) return showErr('Connect primary wallet first.');
+
+    var escrows = getEscrows();
+    var escrow = escrows.find(function(x) { return x.id === id; });
+    if (!escrow) return showErr('Escrow not found.');
+
+    showLoad('DECRYPTING VAULT...');
+    try {
+        var seed = await decryptSeed(escrow, aPw, uPw);
+        var sub = xrpl.Wallet.fromSeed(seed);
+        lg('Vault decrypted: ' + truncAddr(sub.address), 'succ');
+
+        showLoad('ATTEMPTING DELETE...');
+        var result = await tryDeleteNow(sub, wallet.address, id);
+
+        if (result === 'deleted') {
+            lg('=== WALLET DELETED! XRP RECOVERED. ===', 'succ');
+            document.getElementById('wd_result').innerHTML = '<span class="succ">WALLET DELETED! XRP returned to primary wallet.</span>';
+            showReceipt('delete_receipt', 'WALLET DELETED',
+                buildReceiptRow('VAULT', escrow.subAddress) +
+                buildReceiptRow('DESTINATION', wallet.address) +
+                buildReceiptRow('STATUS', '<span class="succ">CONFIRMED DELETED</span>'), '', '');
+        } else if (result === 'too_soon') {
+            lg('Account too new. Starting background auto-delete helper...', 'inf');
+            document.getElementById('wd_result').innerHTML = '<span class="inf">Account too new. Background helper started — will auto-delete when ready. Keep page open.</span>';
+            startAutoDeleteHelper(sub, wallet.address, id);
+        } else if (result === 'has_objects') {
+            showErr('Account still has objects (trust lines). Claim the escrow in [04] first to clear them.');
+        } else {
+            showErr('Delete failed. Check the log for details.');
+        }
+
+        if (client) { try { client.disconnect(); } catch(x) {} client = null; }
+        showLoad('REFRESHING...');
+        await new Promise(function(r) { setTimeout(r, 2000); });
+        await refreshWallet(true);
+        renderDashboard();
+        populateSelects(); populateWdSelect();
+
+        document.getElementById('wd_upw').value = '';
+        document.getElementById('wd_apw').value = '';
+
+    } catch(e) {
+        showErr('Decrypt failed — wrong password(s).');
+    } finally {
+        hideLoad();
+    }
+}
+</script>
+</body>
+</html>
