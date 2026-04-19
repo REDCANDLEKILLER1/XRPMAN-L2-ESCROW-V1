@@ -222,6 +222,23 @@
         .dev-btn-danger:hover{background:#ff4444;color:#fff}
         .dev-status{font-size:10px;color:#aa66aa;margin-top:6px;padding:5px;background:#0a000a;border:1px solid #1a001a}
 
+        /* ═══════════════════════════════════════════════════════════
+           XAMAN APPROVAL OVERLAY
+           ═══════════════════════════════════════════════════════════ */
+        #xaman-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.94);backdrop-filter:blur(10px);z-index:9998;align-items:center;justify-content:center;padding:16px;display:none}
+        .xaman-card{border:1px solid var(--cyan);background:linear-gradient(135deg,rgba(0,15,20,0.97) 0%,rgba(0,8,12,0.99) 100%);box-shadow:0 0 40px rgba(0,255,255,0.25),inset 0 1px 0 rgba(0,255,255,0.15);max-width:380px;width:100%;padding:22px;text-align:center;animation:xamanIn 0.3s cubic-bezier(0.34,1.56,0.64,1)}
+        @keyframes xamanIn{from{transform:scale(0.9) translateY(12px);opacity:0}to{transform:scale(1) translateY(0);opacity:1}}
+        .xaman-hdr{font-family:'Orbitron',monospace;font-weight:bold;font-size:16px;letter-spacing:3px;color:var(--cyan);text-shadow:0 0 12px rgba(0,255,255,0.5);margin-bottom:8px}
+        .xaman-sub{font-size:12px;color:#88ccdd;margin-bottom:14px;font-style:italic}
+        .xaman-btn-primary{width:100%;padding:14px;font-family:'Orbitron',monospace;font-weight:bold;font-size:12px;letter-spacing:3px;background:var(--cyan);color:#000;border:1px solid var(--cyan);cursor:pointer;text-transform:uppercase;box-shadow:0 0 18px rgba(0,255,255,0.4);margin-bottom:8px;transition:all 0.2s}
+        .xaman-btn-primary:hover{background:#66ffff;box-shadow:0 0 24px rgba(0,255,255,0.6)}
+        .xaman-btn-alt{flex:1;padding:9px;font-family:'Orbitron',monospace;font-size:10px;letter-spacing:2px;background:#001a22;border:1px solid #226677;color:var(--cyan);cursor:pointer;text-transform:uppercase}
+        .xaman-btn-alt:hover{background:var(--cyan);color:#000}
+        #xaman-status{font-family:'Orbitron',monospace;font-weight:bold;font-size:11px;letter-spacing:2px;color:var(--neon);text-shadow:0 0 6px rgba(0,255,0,0.4);margin-top:14px;padding:8px;border:1px solid rgba(0,255,0,0.3);background:rgba(0,255,0,0.04);animation:statusPulse 1.8s ease-in-out infinite}
+        @keyframes statusPulse{0%,100%{opacity:1}50%{opacity:0.5}}
+        .xaman-btn-abort{width:100%;margin-top:8px;padding:10px;font-family:'Orbitron',monospace;font-size:10px;letter-spacing:2px;background:#1a0000;border:1px solid var(--warn);color:var(--warn);cursor:pointer;text-transform:uppercase}
+        .xaman-btn-abort:hover{background:var(--warn);color:#fff}
+
         /* Logo tap target for secret dev panel */
         .logo-tap{cursor:default;user-select:none}
         .logo-tap.armed{cursor:pointer}
@@ -446,8 +463,8 @@
         <div class="dev-section">
             <div class="dev-section-hdr">XAMAN INTEGRATION</div>
             <div class="dev-row" style="flex-direction:column;align-items:stretch;gap:4px">
-                <span class="lbl" style="font-size:10px">Xaman proxy URL (your sign-in endpoint)</span>
-                <input type="text" id="dev-xaman-url" placeholder="https://your-xaman-proxy.example/sign" style="flex:1">
+                <span class="lbl" style="font-size:10px">Xaman proxy URL (default baked in, override only if needed)</span>
+                <input type="text" id="dev-xaman-url" placeholder="https://setup-new--redcandlekiller.replit.app" style="flex:1">
             </div>
             <button class="dev-btn" onclick="saveXamanConfig()">SAVE XAMAN CONFIG</button>
             <div id="dev-xaman-status" class="dev-status">Xaman proxy not configured. Users will see a fallback message.</div>
@@ -460,6 +477,32 @@
         </div>
 
         <button class="dev-btn dev-btn-close" onclick="closeDev()">CLOSE DEV PANEL</button>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     XAMAN APPROVAL OVERLAY — ported from XRPMan Deck
+     Shows while waiting for user to sign in Xaman app
+     ═══════════════════════════════════════════════════════════ -->
+<div id="xaman-overlay" style="display:none">
+    <div class="xaman-card">
+        <div class="xaman-hdr">&#9889; APPROVE IN XAMAN</div>
+        <div class="xaman-sub">Signal sent to your Xaman app.</div>
+        <a id="xaman-link" href="#" target="_blank" rel="noopener" style="display:block;text-decoration:none">
+            <button class="xaman-btn-primary">OPEN IN XAMAN</button>
+        </a>
+        <div style="display:flex;gap:6px">
+            <button class="xaman-btn-alt" onclick="showXamanQr()">QR</button>
+            <button class="xaman-btn-alt" onclick="copyXamanLink()">COPY LINK</button>
+        </div>
+        <div id="xaman-qr-box" style="display:none;margin-top:14px;text-align:center">
+            <div style="background:#fff;display:inline-block;padding:8px;border-radius:8px">
+                <img id="xaman-qr-img" style="width:180px;height:180px;display:block" alt="Xaman QR">
+            </div>
+            <div style="font-size:10px;color:#00aa00;letter-spacing:2px;margin-top:6px;font-family:'Orbitron',monospace">SCAN WITH XAMAN</div>
+        </div>
+        <div id="xaman-status" class="xaman-status">AWAITING &middot; APPROVAL</div>
+        <button class="xaman-btn-abort" onclick="abortXaman()">ABORT</button>
     </div>
 </div>
 
@@ -794,6 +837,10 @@ var NET = "test";
 // Example: https://raw.githubusercontent.com/<user>/<repo>/main/config.json
 // ════════════════════════════════════════════════════════════════════
 var REMOTE_CONFIG_URL = 'https://raw.githubusercontent.com/REDCANDLEKILLER1/XRPMAN-L2-ESCROW-V1/main/config.json';
+
+// Baked-in Xaman proxy default — same one used by XRPMan Deck.
+// Users don't need to configure anything; dev panel can override at runtime if needed.
+var DEFAULT_XAMAN_PROXY = 'https://setup-new--redcandlekiller.replit.app';
 var REMOTE_CONFIG_CACHE_KEY = 'xmeme_remote_config_cache';
 var REMOTE_CONFIG_TTL_MS = 5 * 60 * 1000; // 5 min soft refresh
 var _remoteConfig = null;        // live values from GitHub
@@ -2943,16 +2990,21 @@ function _remoteIsLive() {
 function _devGetConfig() {
     var local = {};
     try { local = JSON.parse(localStorage.getItem('xmeme_dev_config')) || {}; } catch(e) {}
-    if (!_remoteIsLive()) return local;
+    if (!_remoteIsLive()) {
+        // Even without remote, default Xaman proxy applies if nothing is set
+        if (!local.xamanUrl) local.xamanUrl = DEFAULT_XAMAN_PROXY;
+        return local;
+    }
     var r = _remoteConfig || {};
     var gate = r.gate || {};
     var xaman = r.xaman || {};
     // Remote keys override local ones. Local keys only fill gaps the remote doesn't set.
+    // Baked-in default Xaman proxy is the final fallback — so it Just Works.
     return {
         gateEnabled: gate.enabled === undefined ? !!local.gateEnabled : !!gate.enabled,
         gateAddress: gate.address || '',
         gateAmount: (gate.minXrp !== undefined ? String(gate.minXrp) : (local.gateAmount || '5')),
-        xamanUrl: xaman.proxyUrl || '',
+        xamanUrl: xaman.proxyUrl || local.xamanUrl || DEFAULT_XAMAN_PROXY,
         _remoteVersion: r.version,
         _remoteUpdated: r.updated,
         _remoteAnnouncement: r.announcement || ''
@@ -2984,7 +3036,7 @@ function loadDevConfigIntoPanel() {
     };
     setVal('dev-gate-address', cfg.gateAddress);
     setVal('dev-gate-amount', cfg.gateAmount || '5');
-    setVal('dev-xaman-url', cfg.xamanUrl);
+    setVal('dev-xaman-url', cfg.xamanUrl || DEFAULT_XAMAN_PROXY);
     _updateGateToggleUI(!!cfg.gateEnabled);
     var tog = document.getElementById('dev-gate-toggle');
     if (tog) {
@@ -3126,9 +3178,13 @@ function _updateXamanStatusUI() {
     var cfg = _devGetConfig();
     var el = document.getElementById('dev-xaman-status');
     if (!el) return;
-    el.innerHTML = cfg.xamanUrl
-        ? '<span style="color:#00ff00">&#10003; Xaman proxy configured.</span>'
-        : '<span style="color:#aa66aa">Xaman proxy not configured. Users see a fallback message.</span>';
+    if (cfg.xamanUrl === DEFAULT_XAMAN_PROXY) {
+        el.innerHTML = '<span style="color:#00ff00">&#10003; Xaman ready (using baked-in default proxy).</span>';
+    } else if (cfg.xamanUrl) {
+        el.innerHTML = '<span style="color:#00ff00">&#10003; Xaman configured with custom proxy.</span>';
+    } else {
+        el.innerHTML = '<span style="color:#aa66aa">Xaman proxy not configured.</span>';
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -3425,56 +3481,109 @@ async function enforceGateIfEnabled(address) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//   XAMAN LOGIN STUB — uses proxy URL from dev config
+//   XAMAN CLIENT — ported from XRPMan Deck v23
+//   Proxy: https://setup-new--redcandlekiller.replit.app
+//   Supports: signIn, pay. Both use a 3s poll loop with cancel support.
 // ════════════════════════════════════════════════════════════════════
-async function loginWithXaman() {
+var _xamanCancelled = false;
+
+async function _xamanCreate(txjson) {
     var cfg = _devGetConfig();
-    if (window._xrpmanReact) window._xrpmanReact('xaman');
-    if (!cfg.xamanUrl) {
-        showErr('Xaman login is not configured yet. Set the Xaman proxy URL in the dev panel (7-tap the XRPMAN STUDIOS banner). For now, use seed or JSON login.');
-        return;
-    }
+    var proxy = cfg.xamanUrl || DEFAULT_XAMAN_PROXY;
     try {
-        showLoad('REQUESTING XAMAN SIGN-IN...');
-        var resp = await fetch(cfg.xamanUrl, {
+        var r = await fetch(proxy + '/api/payload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'signin', app: 'xmeme-escrow' })
+            body: JSON.stringify({ txjson: txjson })
         });
-        if (!resp.ok) throw new Error('Proxy returned ' + resp.status);
-        var data = await resp.json();
-        hideLoad();
-        if (data.signUrl) {
-            window.open(data.signUrl, '_blank');
-            lg('Xaman sign-in opened. Complete in the Xaman app.', 'inf');
-            if (data.resultUrl) pollXamanResult(data.resultUrl);
-            else showErr('Xaman proxy returned no resultUrl — complete sign-in, then reload.');
-        } else if (data.address) {
-            await connectAsReadOnly(data.address);
-        } else {
-            showErr('Xaman proxy returned an unexpected response.');
-        }
+        if (!r.ok) return null;
+        var d = await r.json();
+        return {
+            uuid: d.uuid,
+            deepLink: d.next && d.next.always,
+            qr: d.refs && d.refs.qr_png
+        };
     } catch(e) {
-        hideLoad();
-        showErr('Xaman login failed: ' + e.message);
+        console.warn('xaman.create failed', e);
+        return null;
     }
 }
-async function pollXamanResult(resultUrl) {
-    var tries = 0, maxTries = 60;
-    var iv = setInterval(async function() {
-        tries++;
-        if (tries > maxTries) { clearInterval(iv); showErr('Xaman sign-in timed out.'); return; }
+
+async function _xamanPoll(uuid) {
+    _xamanCancelled = false;
+    var cfg = _devGetConfig();
+    var proxy = cfg.xamanUrl || DEFAULT_XAMAN_PROXY;
+    for (var i = 0; i < 60; i++) {
+        if (_xamanCancelled) return { signed: false, cancelled: true };
+        await new Promise(function(res) { setTimeout(res, 3000); });
         try {
-            var r = await fetch(resultUrl);
-            if (!r.ok) return;
-            var d = await r.json();
-            if (d.resolved && d.address) { clearInterval(iv); await connectAsReadOnly(d.address); }
+            var r = await fetch(proxy + '/api/payload/' + uuid);
+            var s = await r.json();
+            if (s.meta && s.meta.signed === true) {
+                return { signed: true, address: s.response && s.response.account, txid: s.response && s.response.txid };
+            }
+            if (s.meta && s.meta.signed === false && s.meta.resolved) {
+                return { signed: false, rejected: true };
+            }
         } catch(e) {}
-    }, 2000);
+    }
+    return { signed: false, timeout: true };
 }
+
+function xamanCancel() { _xamanCancelled = true; }
+
+// ════════════════════════════════════════════════════════════════════
+//   XAMAN OVERLAY — approval modal with deep link / QR / copy / abort
+// ════════════════════════════════════════════════════════════════════
+function showXamanOverlay(link, qr) {
+    document.getElementById('xaman-link').href = link || '#';
+    document.getElementById('xaman-qr-img').src = qr || '';
+    document.getElementById('xaman-qr-box').style.display = 'none';
+    document.getElementById('xaman-status').textContent = 'AWAITING · APPROVAL';
+    document.getElementById('xaman-overlay').style.display = 'flex';
+}
+function hideXamanOverlay() {
+    document.getElementById('xaman-overlay').style.display = 'none';
+}
+function showXamanQr() {
+    document.getElementById('xaman-qr-box').style.display = 'block';
+}
+function copyXamanLink() {
+    var l = document.getElementById('xaman-link').href;
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(l).then(function() { lg('Xaman deep link copied.', 'succ'); });
+    }
+}
+function abortXaman() {
+    xamanCancel();
+    hideXamanOverlay();
+    lg('Xaman sign-in aborted.', 'inf');
+}
+
+// ════════════════════════════════════════════════════════════════════
+//   LOGIN WITH XAMAN — main entry point
+// ════════════════════════════════════════════════════════════════════
+async function loginWithXaman() {
+    if (window._xrpmanReact) window._xrpmanReact('xaman');
+    lg('Xaman sign-in requested. Signalling your Xaman app...', 'inf');
+    var p = await _xamanCreate({ TransactionType: 'SignIn' });
+    if (!p) {
+        showErr('Xaman proxy unreachable. Check your connection or try seed/JSON login.');
+        return;
+    }
+    showXamanOverlay(p.deepLink, p.qr);
+    var r = await _xamanPoll(p.uuid);
+    hideXamanOverlay();
+    if (r.cancelled) { lg('Xaman sign-in cancelled.', 'inf'); return; }
+    if (r.timeout)   { showErr('Xaman sign-in timed out. Please try again.'); return; }
+    if (r.rejected)  { showErr('Xaman sign-in was rejected in the app.'); return; }
+    if (!r.signed || !r.address) { showErr('Xaman sign-in did not complete.'); return; }
+    await connectAsReadOnly(r.address);
+}
+
 async function connectAsReadOnly(address) {
     if (!/^r[1-9A-HJ-NP-Za-km-z]{25,34}$/.test(address)) { showErr('Invalid address from Xaman.'); return; }
-    lg('Xaman address verified: ' + truncAddr(address) + '. READ-ONLY mode.', 'inf');
+    lg('Xaman address verified: ' + truncAddr(address) + '. READ-ONLY mode.', 'succ');
     var ok = await enforceGateIfEnabled(address);
     if (!ok) return;
     var info = document.getElementById('w_info');
