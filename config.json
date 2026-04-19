@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "updated": "2026-04-19",
+  "appName": "XMEME Precision Escrow Terminal",
+  "announcement": "",
+  "gate": {
+    "enabled": false,
+    "address": "",
+    "minXrp": 5
+  },
+  "xaman": {
+    "proxyUrl": ""
+  }
+}
