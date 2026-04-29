@@ -1895,6 +1895,64 @@ document.addEventListener('input', function(e) {
 // [02] CREATE ESCROW — CONFIRM then EXECUTE
 // ============================================================
 
+// [1.0] Build human-readable on-chain memos for the lock transactions.
+// Every escrow attaches the same memo to fund / CheckCreate / CheckCash so
+// anyone inspecting the primary wallet, the vault, or the check can read
+// exactly what was locked, for how long, when it unlocks, and which app did it.
+function buildEscrowMemos(opts) {
+    // opts: { tokenName, amount, unlockDate (Date|number), subAddress, lockSeconds }
+    var titleMatch = (document.title || '').match(/v[\d.]+/);
+    var APP_LABEL = 'XMEME Precision Escrow Terminal' + (titleMatch ? ' ' + titleMatch[0] : '');
+
+    // Human-readable lock duration
+    var totalSec = Math.max(0, opts.lockSeconds | 0);
+    var days = Math.floor(totalSec / 86400);
+    var hours = Math.floor((totalSec % 86400) / 3600);
+    var mins = Math.floor((totalSec % 3600) / 60);
+    var dur;
+    if (days > 0)        dur = days + 'd' + (hours ? ' ' + hours + 'h' : '');
+    else if (hours > 0)  dur = hours + 'h' + (mins ? ' ' + mins + 'm' : '');
+    else                 dur = (mins || '<1') + 'm';
+
+    // Unlock timestamp in UTC: 2026-05-29 14:30 UTC
+    var d = new Date(opts.unlockDate);
+    var pad = function(n){ return n < 10 ? '0' + n : '' + n; };
+    var unlockUTC = d.getUTCFullYear() + '-' + pad(d.getUTCMonth()+1) + '-' + pad(d.getUTCDate()) +
+                    ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ' UTC';
+
+    var msg = 'XMEME ESCROW LOCK | ' + opts.amount + ' ' + opts.tokenName +
+              ' | locked ' + dur +
+              ' | unlocks ' + unlockUTC +
+              ' | vault ' + opts.subAddress +
+              ' | ' + APP_LABEL;
+
+    // String -> hex (XRPL memos must be hex). Prefer xrpl.js helper, fall back to manual UTF-8.
+    function s2h(s) {
+        if (window.xrpl && typeof xrpl.convertStringToHex === 'function') {
+            return xrpl.convertStringToHex(s);
+        }
+        var bytes = new TextEncoder().encode(s);
+        var h = '';
+        for (var i = 0; i < bytes.length; i++) {
+            var b = bytes[i].toString(16);
+            if (b.length === 1) b = '0' + b;
+            h += b;
+        }
+        return h.toUpperCase();
+    }
+
+    return {
+        text: msg,
+        memos: [{
+            Memo: {
+                MemoType:   s2h('xmeme/escrow-lock'),
+                MemoFormat: s2h('text/plain'),
+                MemoData:   s2h(msg)
+            }
+        }]
+    };
+}
+
 // [1.1] Show confirmation before executing
 function createEscrowConfirm() {
     // [13.1] Pre-flight blocking checks
@@ -1958,13 +2016,26 @@ async function createEscrow() {
         }
 
         // Step 1: Fund sub-wallet
+        // Build the lock-proof memo once and attach to all 3 lock transactions
+        // so it appears on the primary's history, the CheckCreate, and the vault's CheckCash.
+        var lockSeconds = Math.floor((unlockDate.getTime() - Date.now()) / 1000);
+        var memoBundle = buildEscrowMemos({
+            tokenName:   curInput,
+            amount:      amount.toString(),
+            unlockDate:  unlockDate,
+            subAddress:  sub.address,
+            lockSeconds: lockSeconds
+        });
+        lg('Memo attached to lock txs: ' + memoBundle.text, 'inf');
+
         showLoad('FUNDING SUB-WALLET (1.5 XRP)...');
         lg('Sending 1.5 XRP to activate sub-wallet...', 'inf');
         var fundTx = {
             TransactionType: 'Payment',
             Account: wallet.address,
             Destination: sub.address,
-            Amount: xrpl.xrpToDrops('1.5')
+            Amount: xrpl.xrpToDrops('1.5'),
+            Memos: memoBundle.memos
         };
         var fundRes = await submitAsPrimary(c, fundTx, 'Fund sub-wallet (1.5 XRP)');
         if (fundRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Fund failed: ' + fundRes.result.meta.TransactionResult);
@@ -1979,7 +2050,8 @@ async function createEscrow() {
             TransactionType: 'CheckCreate',
             Account: wallet.address,
             Destination: sub.address,
-            SendMax: { currency: currency, issuer: issuer, value: amount.toString() }
+            SendMax: { currency: currency, issuer: issuer, value: amount.toString() },
+            Memos: memoBundle.memos
         };
         var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + amount + ' ' + curInput + ')');
         if (checkRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('CheckCreate failed: ' + checkRes.result.meta.TransactionResult);
@@ -2007,7 +2079,8 @@ async function createEscrow() {
             Account: sub.address,
             CheckID: checkID,
             Amount: { currency: currency, issuer: issuer, value: amount.toString() },
-            Fee: '12'
+            Fee: '12',
+            Memos: memoBundle.memos
         });
         cashTx.LastLedgerSequence = cashTx.LastLedgerSequence + 50; // extra headroom for slow nodes
         var cashRes = await c.submitAndWait(sub.sign(cashTx).tx_blob);
