@@ -865,6 +865,36 @@
         <button id="wd_delete_btn" onclick="wdManualDelete()" style="background:#1a0000;border-color:var(--warn);color:#ff4444;margin-top:6px">DECRYPT &amp; DELETE WALLET</button>
         <div id="wd_result" style="font-size:.75em;color:#00aa00;margin-top:4px"></div>
         <div id="delete_receipt" class="hidden"></div>
+
+        <!-- ─────── EMERGENCY MANUAL RECOVERY (orphaned sub-wallets) ─────── -->
+        <div style="margin-top:14px;border-top:1px dashed #442222;padding-top:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleEmergencyRecovery()">
+                <div style="font-family:'Orbitron',monospace;font-size:.78em;color:#ff8844;letter-spacing:2px">&#9888; EMERGENCY RECOVERY</div>
+                <div id="er_arrow" style="color:#ff8844;font-size:.7em">[+] EXPAND</div>
+            </div>
+            <div id="er_body" class="hidden" style="margin-top:8px">
+                <div style="background:#1a0a00;border:1px solid #442200;padding:8px;font-size:.7em;color:#ffaa66;line-height:1.6;margin-bottom:8px">
+                    <b>USE ONLY FOR ORPHANED SUB-WALLETS.</b> If a previous escrow attempt failed mid-flow and left a sub-wallet funded but not stored in your local list (you'll have a recovery seed from the failure dialog), paste it here to delete the account and recover the XRP. This bypasses passwords because emergency seeds are unencrypted.<br><br>
+                    Requirements: account must have <b>no trust lines</b> (if it does, you have tokens to claim — use a Xaman-imported wallet for that) and must be <b>at least 256 ledgers old</b> (~15 min). Network must match the sub-wallet's network.
+                </div>
+
+                <label>SUB-WALLET SEED (s...)</label>
+                <div class="pw-wrap">
+                    <input id="er_seed" type="password" placeholder="sEd..." spellcheck="false" autocomplete="off">
+                    <button class="pw-toggle" type="button" onclick="togglePw('er_seed',this)">SHOW</button>
+                </div>
+
+                <div id="er_derived" style="font-size:.68em;color:#558899;margin:4px 0;min-height:14px"></div>
+
+                <label>DESTINATION (where to send recovered XRP)</label>
+                <input id="er_dest" type="text" placeholder="defaults to your connected primary" spellcheck="false">
+                <div style="font-size:.65em;color:#446677;margin-top:2px">Leave empty to use connected primary: <span id="er_primary_hint" class="inf">—</span></div>
+
+                <button id="er_delete_btn" onclick="emergencyManualDelete()" style="background:#1a0000;border-color:#ff8844;color:#ff8844;margin-top:8px">EMERGENCY DELETE &amp; RECOVER</button>
+                <div id="er_result" style="font-size:.72em;margin-top:6px;min-height:16px"></div>
+                <div id="er_receipt" class="hidden"></div>
+            </div>
+        </div>
     </div>
 
     <!-- [06] TX EXPLORER -->
@@ -3179,6 +3209,136 @@ async function wdManualDelete() {
     } finally {
         hideLoad();
         if (window._xrpmanReact) window._xrpmanReact('delete');
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//   [05] EMERGENCY RECOVERY — manual delete by seed (orphaned vaults)
+// ════════════════════════════════════════════════════════════════════
+// For sub-wallets that were funded but never made it into the escrow list
+// (e.g. fund Payment succeeded, then a later step failed, throwing before
+// the record was saved). Lets the user paste the recovery seed shown in
+// the failure dialog and run AccountDelete directly.
+function toggleEmergencyRecovery() {
+    var body = document.getElementById('er_body');
+    var arrow = document.getElementById('er_arrow');
+    if (!body) return;
+    var hidden = body.classList.toggle('hidden');
+    if (arrow) arrow.textContent = hidden ? '[+] EXPAND' : '[−] COLLAPSE';
+    if (!hidden) {
+        // Refresh the primary hint each time we open
+        var hint = document.getElementById('er_primary_hint');
+        if (hint) hint.textContent = (wallet && wallet.address) ? truncAddr(wallet.address) : 'connect a primary wallet first';
+        attachEmergencySeedListener();
+    }
+}
+
+// Live-derive the address from the seed as the user types/pastes,
+// so they can verify it matches what they expect before submitting.
+function attachEmergencySeedListener() {
+    var seedEl = document.getElementById('er_seed');
+    if (!seedEl || seedEl._xrpmanWired) return;
+    seedEl._xrpmanWired = true;
+    seedEl.addEventListener('input', function() {
+        var derived = document.getElementById('er_derived');
+        var v = seedEl.value.trim();
+        if (!v) { derived.textContent = ''; return; }
+        try {
+            var w = v.includes(' ') ? xrpl.Wallet.fromMnemonic(v) : xrpl.Wallet.fromSeed(v);
+            derived.innerHTML = 'Derived address: <span class="succ">' + w.address + '</span>';
+        } catch(e) {
+            derived.innerHTML = '<span style="color:#ff6666">Invalid seed format.</span>';
+        }
+    });
+}
+
+async function emergencyManualDelete() {
+    var seed = document.getElementById('er_seed').value.trim();
+    var customDest = document.getElementById('er_dest').value.trim();
+    var resultEl = document.getElementById('er_result');
+    var btn = document.getElementById('er_delete_btn');
+
+    if (!seed) { resultEl.innerHTML = '<span style="color:#ff6666">Paste the sub-wallet seed first.</span>'; return; }
+
+    var destination = customDest || (wallet && wallet.address) || '';
+    if (!destination) {
+        resultEl.innerHTML = '<span style="color:#ff6666">No destination — connect a primary wallet or paste a destination address.</span>';
+        return;
+    }
+    if (!/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(destination)) {
+        resultEl.innerHTML = '<span style="color:#ff6666">Destination is not a valid XRPL address.</span>';
+        return;
+    }
+
+    // Derive sub-wallet from seed
+    var sub;
+    try {
+        sub = seed.includes(' ') ? xrpl.Wallet.fromMnemonic(seed) : xrpl.Wallet.fromSeed(seed);
+    } catch(e) {
+        resultEl.innerHTML = '<span style="color:#ff6666">Invalid seed: ' + (e.message || e) + '</span>';
+        return;
+    }
+
+    if (sub.address === destination) {
+        resultEl.innerHTML = '<span style="color:#ff6666">Destination cannot equal the sub-wallet address.</span>';
+        return;
+    }
+
+    // Confirm before destructive action
+    var confirmHtml =
+        confRow('SUB-WALLET', sub.address) +
+        confRow('DESTINATION', destination) +
+        confRow('NETWORK', NET.toUpperCase()) +
+        '<div class="conf-warn">' +
+        '&#9888; This runs <b>AccountDelete</b> on the sub-wallet. The XRP balance (minus a 0.2 XRP burn fee) will be sent to the destination. <b>This is irreversible.</b><br><br>' +
+        'If the sub-wallet still has trust lines (tokens), this will fail — claim those tokens via Xaman first, then come back here.' +
+        '</div>';
+
+    showConfirm('CONFIRM EMERGENCY DELETE', confirmHtml, 'CONFIRM &amp; DELETE', function() {
+        runEmergencyDelete(sub, destination);
+    });
+}
+
+async function runEmergencyDelete(sub, destination) {
+    var resultEl = document.getElementById('er_result');
+    var btn = document.getElementById('er_delete_btn');
+    btn.disabled = true; btn.textContent = 'DELETING...';
+    resultEl.innerHTML = '<span class="inf">Checking account state...</span>';
+    showLoad('EMERGENCY DELETE...');
+
+    try {
+        // Reuse the standard delete pipeline. The synthetic id is intentional —
+        // markEscrowDeleted will simply not find a matching record and no-op.
+        var syntheticId = 'emergency:' + sub.address;
+        var outcome = await tryDeleteNow(sub, destination, syntheticId);
+
+        if (outcome === 'deleted') {
+            lg('=== EMERGENCY DELETE SUCCEEDED. XRP RECOVERED. ===', 'succ');
+            resultEl.innerHTML = '<span class="succ">WALLET DELETED. XRP returned to ' + truncAddr(destination) + '.</span>';
+            showReceipt('er_receipt', 'EMERGENCY DELETE',
+                buildReceiptRow('VAULT', sub.address) +
+                buildReceiptRow('DESTINATION', destination) +
+                buildReceiptRow('NETWORK', NET.toUpperCase()) +
+                buildReceiptRow('STATUS', '<span class="succ">CONFIRMED DELETED</span>'), '', '');
+            // Clear the inputs after success
+            document.getElementById('er_seed').value = '';
+            document.getElementById('er_dest').value = '';
+            document.getElementById('er_derived').textContent = '';
+            // Refresh primary balance — the recovered XRP is now there
+            try { await refreshWallet(true); } catch(e) {}
+        } else if (outcome === 'too_soon') {
+            resultEl.innerHTML = '<span class="inf">&#8987; Account too new (under 256 ledgers / ~15 min). Wait a bit and try again.</span>';
+        } else if (outcome === 'has_objects') {
+            resultEl.innerHTML = '<span style="color:#ff8844">Sub-wallet still holds trust lines or other objects. Claim/sweep tokens first (Xaman import the seed), then retry.</span>';
+        } else {
+            resultEl.innerHTML = '<span style="color:#ff6666">Delete failed — check log for details. Account may not exist on ' + NET.toUpperCase() + ', or seed may be wrong network.</span>';
+        }
+    } catch(e) {
+        resultEl.innerHTML = '<span style="color:#ff6666">Error: ' + (e.message || e) + '</span>';
+        lg('Emergency delete error: ' + (e.message || e), 'err');
+    } finally {
+        hideLoad();
+        btn.disabled = false; btn.textContent = 'EMERGENCY DELETE &amp; RECOVER';
     }
 }
 
