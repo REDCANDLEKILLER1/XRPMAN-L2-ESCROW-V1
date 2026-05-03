@@ -559,6 +559,7 @@
             <div style="font-size:10px;color:#00aa00;letter-spacing:2px;margin-top:6px;font-family:'Orbitron',monospace">SCAN WITH XAMAN</div>
         </div>
         <div id="xaman-status" class="xaman-status">AWAITING &middot; APPROVAL</div>
+        <div style="font-size:10px;color:#00aa00;text-align:center;margin-top:8px;line-height:1.5;opacity:.7">Open Xaman, sign the request,<br>then come back here. May take 5-15s after signing.</div>
         <button class="xaman-btn-abort" onclick="abortXaman()">ABORT</button>
     </div>
 </div>
@@ -1853,7 +1854,7 @@ async function submitAsPrimary(c, txjson, label, opts) {
     //  3) If `tx` keeps returning txnNotFound but Xaman dispatched it,
     //     fall back to scanning the user's account_tx for the matching hash.
 
-    var ATTEMPTS = 60;          // 60 * 2s = 120s ceiling
+    var ATTEMPTS = 90;          // 90 * 2s = 180s ceiling — accommodates mainnet congestion
     var GAP_MS   = 2000;
     var lastErr  = null;
     var dispatchOk = result.dispatched && /^tes/.test(result.dispatched);
@@ -2085,7 +2086,7 @@ async function submitAsPrimary(c, txjson, label, opts) {
     } catch(e) { /* fall through to error */ }
 
     var bithompBase = (NET === 'main') ? 'https://bithomp.com' : 'https://test.bithomp.com';
-    var timeoutErr = new Error(label + ' was signed in Xaman but our node has not seen it validate after 2 min. ' +
+    var timeoutErr = new Error(label + ' was signed in Xaman but our node has not seen it validate after 3 min. ' +
                     'Tx may still succeed — check ' + bithompBase + '/explorer/' + result.txid + ' in a minute.');
     timeoutErr.xamanTimeout = true;
     timeoutErr.txid = result.txid;
@@ -2482,7 +2483,48 @@ async function createEscrow() {
             SendMax: { currency: currency, issuer: issuer, value: amount.toString() },
             Memos: memoBundle.memos
         };
-        var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + amount + ' ' + curInput + ')', { verifyCheckCreated: true });
+        var checkRes;
+        try {
+            checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + amount + ' ' + curInput + ')', { verifyCheckCreated: true });
+        } catch (checkErr) {
+            // Same recovery pattern as fund: if Xaman timed out and the Check
+            // may eventually validate, save pending state so the user can
+            // resume from CheckCash without losing the funded sub-wallet.
+            if (checkErr && checkErr.xamanTimeout) {
+                try {
+                    showLoad('SAVING PENDING STATE...');
+                    var pendingEnc = await encryptSeed(sub.seed, adminPw, userPw);
+                    var pendingRec = {
+                        id: 'pending_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+                        subAddress: sub.address,
+                        primaryAddress: wallet.address,
+                        issuer: issuer,
+                        currencyInput: curInput,
+                        currencyHex: currency,
+                        amount: amount.toString(),
+                        salt: toB64(pendingEnc.salt),
+                        iv:   toB64(pendingEnc.iv),
+                        ct:   toB64(pendingEnc.ct),
+                        argon2: ARGON2_PARAMS,
+                        unlockDateMs: unlockDate.getTime(),
+                        memos: memoBundle.memos,
+                        memoText: memoBundle.text,
+                        fundTxHash: fundHash || '',
+                        checkTxHash: checkErr.txid || '',
+                        dispatched: checkErr.dispatched || '',
+                        network: NET,
+                        createdAt: Date.now(),
+                        step: 'check_pending'
+                    };
+                    savePending(pendingRec);
+                    lg('Pending escrow saved at CheckCreate step. Resume from [02] PENDING ESCROWS once Check validates.', 'inf');
+                    renderPendingBanner();
+                } catch(saveE) {
+                    lg('Could not save pending state: ' + saveE.message, 'err');
+                }
+            }
+            throw checkErr;
+        }
         if (checkRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('CheckCreate failed: ' + checkRes.result.meta.TransactionResult);
         // [9.2] CheckCreate tx hash
         var checkHash = checkRes.result.hash || checkRes.result.tx_json && checkRes.result.tx_json.hash || '';
@@ -2502,7 +2544,42 @@ async function createEscrow() {
         if (!checkID) {
             checkID = await fetchCheckIDForSub(c, sub.address, wallet.address);
         }
-        if (!checkID) throw new Error('Could not extract CheckID from metadata or account_objects.');
+        if (!checkID) {
+            // CheckCreate may have validated on Xaman's side but our node
+            // can't see it yet. Save pending state so user can resume from
+            // CheckCash once the Check object becomes visible.
+            try {
+                showLoad('SAVING PENDING STATE...');
+                var pendingEnc = await encryptSeed(sub.seed, adminPw, userPw);
+                var pendingRec = {
+                    id: 'pending_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+                    subAddress: sub.address,
+                    primaryAddress: wallet.address,
+                    issuer: issuer,
+                    currencyInput: curInput,
+                    currencyHex: currency,
+                    amount: amount.toString(),
+                    salt: toB64(pendingEnc.salt),
+                    iv:   toB64(pendingEnc.iv),
+                    ct:   toB64(pendingEnc.ct),
+                    argon2: ARGON2_PARAMS,
+                    unlockDateMs: unlockDate.getTime(),
+                    memos: memoBundle.memos,
+                    memoText: memoBundle.text,
+                    fundTxHash: fundHash || '',
+                    checkTxHash: checkHash || '',
+                    network: NET,
+                    createdAt: Date.now(),
+                    step: 'check_pending'
+                };
+                savePending(pendingRec);
+                lg('CheckCreate signed but Check not yet visible on our node. Pending state saved.', 'inf');
+                renderPendingBanner();
+            } catch(saveE) {
+                lg('Could not save pending state: ' + saveE.message, 'err');
+            }
+            throw new Error('CheckCreate signed but Check object not yet visible on this node. Pending state saved — resume from [02] PENDING ESCROWS in 1-2 minutes.');
+        }
         lg('Check ID: ' + checkID.slice(0, 12) + '...', 'succ');
 
         // Step 3: Sub-wallet cashes the check
@@ -2663,14 +2740,25 @@ function renderPendingBanner() {
     }
     var bithompBase = (NET === 'main') ? 'https://bithomp.com' : 'https://test.bithomp.com';
     var html = '<div style="font-family:\'Orbitron\',monospace;letter-spacing:2px;color:#ff8844;margin-bottom:6px">&#9888; PENDING ESCROW' + (pending.length > 1 ? 'S (' + pending.length + ')' : '') + '</div>';
-    html += '<div style="color:#ddaa66;margin-bottom:8px">Fund Payment was signed in Xaman but our node didn\'t see it validate within 2 min. The sub-wallet may be funded — verify on Bithomp, then resume to lock your tokens.</div>';
+    html += '<div style="color:#ddaa66;margin-bottom:8px">A Xaman tx was signed but our node didn\'t see it validate in time. The escrow may still complete — verify on Bithomp, then resume from where it stopped.</div>';
     pending.forEach(function(p) {
         var unlockStr = new Date(p.unlockDateMs).toLocaleString();
+        var stepLabel = p.step === 'check_pending' ? 'CHECK PENDING' : 'FUND PENDING';
+        var stepDesc = p.step === 'check_pending'
+            ? 'Sub-wallet funded. CheckCreate may still validate. Resume → CheckCash only.'
+            : 'Fund Payment may still validate. Resume → CheckCreate + CheckCash.';
         html += '<div style="border:1px solid #553300;padding:6px;margin-bottom:6px;background:#0a0500">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">';
         html += '<div><b>' + escapeHtml(p.amount) + ' ' + escapeHtml(p.currencyInput) + '</b> &rarr; vault <span class="inf">' + truncAddr(p.subAddress) + '</span></div>';
+        html += '<div style="font-family:\'Orbitron\',monospace;font-size:.7em;letter-spacing:1px;color:#ffaa44;background:#1a0a00;border:1px solid #663300;padding:2px 6px">' + stepLabel + '</div>';
+        html += '</div>';
+        html += '<div style="color:#aa8866;font-size:.9em;margin-top:3px">' + stepDesc + '</div>';
         html += '<div style="color:#aa8866;font-size:.92em">Unlock: ' + escapeHtml(unlockStr) + ' &middot; Net: ' + escapeHtml((p.network||'?').toUpperCase()) + '</div>';
         if (p.fundTxHash) {
-            html += '<div style="font-family:\'Share Tech Mono\',monospace;font-size:.85em;color:#886644;margin-top:2px"><a href="' + bithompBase + '/explorer/' + p.fundTxHash + '" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none">[Verify fund tx on Bithomp &#8599;]</a></div>';
+            html += '<div style="font-family:\'Share Tech Mono\',monospace;font-size:.85em;color:#886644;margin-top:2px"><a href="' + bithompBase + '/explorer/' + p.fundTxHash + '" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none">[Fund tx on Bithomp &#8599;]</a></div>';
+        }
+        if (p.checkTxHash) {
+            html += '<div style="font-family:\'Share Tech Mono\',monospace;font-size:.85em;color:#886644;margin-top:2px"><a href="' + bithompBase + '/explorer/' + p.checkTxHash + '" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none">[Check tx on Bithomp &#8599;]</a></div>';
         }
         html += '<div style="display:flex;gap:6px;margin-top:6px">';
         html += '<button onclick="resumePending(\'' + p.id + '\')" style="flex:1;background:#003322;border-color:var(--neon);color:var(--neon);padding:5px;font-size:.95em">VERIFY &amp; RESUME</button>';
@@ -2739,36 +2827,51 @@ async function runResumePending(pending, userPw, adminPw) {
             throw notFound;
         }
         var bal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
-        lg('Sub-wallet active: ' + bal.toFixed(2) + ' XRP. Resuming from CheckCreate.', 'succ');
+        var resumeFromCheckCash = (pending.step === 'check_pending');
+        lg('Sub-wallet active: ' + bal.toFixed(2) + ' XRP. Resuming from ' + (resumeFromCheckCash ? 'CheckCash' : 'CheckCreate') + '.', 'succ');
 
-        // Step 2: CheckCreate (same as the original flow, with the persisted memos)
-        showLoad('CREATING TOKEN CHECK...');
-        var checkTx = {
-            TransactionType: 'CheckCreate',
-            Account: wallet.address,
-            Destination: sub.address,
-            SendMax: { currency: pending.currencyHex, issuer: pending.issuer, value: pending.amount },
-            Memos: pending.memos
-        };
-        var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + pending.amount + ' ' + pending.currencyInput + ')', { verifyCheckCreated: true });
-        if (checkRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('CheckCreate failed: ' + checkRes.result.meta.TransactionResult);
-        var checkHash = checkRes.result.hash || (checkRes.result.tx_json && checkRes.result.tx_json.hash) || '';
-        lg('Check created. TX: ' + (checkHash || 'N/A'), 'succ');
-
-        // Extract CheckID
         var checkID = null;
-        var nodes = checkRes.result.meta.AffectedNodes || [];
-        for (var i = 0; i < nodes.length; i++) {
-            if (nodes[i].CreatedNode && nodes[i].CreatedNode.LedgerEntryType === 'Check') {
-                checkID = nodes[i].CreatedNode.LedgerIndex; break;
-            }
-        }
-        // Same Xaman-synthetic-success fallback as the main create flow
-        if (!checkID) {
+        var checkHash = '';
+
+        if (resumeFromCheckCash) {
+            // CheckCreate was already signed; look it up on-chain via account_objects.
+            // If found, we can proceed straight to CheckCash without re-signing.
+            showLoad('LOOKING UP EXISTING CHECK...');
             checkID = await fetchCheckIDForSub(c, sub.address, wallet.address);
+            if (!checkID) {
+                throw new Error('Check object not yet visible on ' + NET.toUpperCase() + '. CheckCreate tx may still be propagating. Verify on Bithomp using the saved tx hash, then retry in a minute.');
+            }
+            checkHash = pending.checkTxHash || '';
+            lg('Found existing Check: ' + checkID.slice(0, 12) + '... — proceeding to CheckCash.', 'succ');
+        } else {
+            // Step 2: CheckCreate (same as the original flow, with the persisted memos)
+            showLoad('CREATING TOKEN CHECK...');
+            var checkTx = {
+                TransactionType: 'CheckCreate',
+                Account: wallet.address,
+                Destination: sub.address,
+                SendMax: { currency: pending.currencyHex, issuer: pending.issuer, value: pending.amount },
+                Memos: pending.memos
+            };
+            var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + pending.amount + ' ' + pending.currencyInput + ')', { verifyCheckCreated: true });
+            if (checkRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('CheckCreate failed: ' + checkRes.result.meta.TransactionResult);
+            checkHash = checkRes.result.hash || (checkRes.result.tx_json && checkRes.result.tx_json.hash) || '';
+            lg('Check created. TX: ' + (checkHash || 'N/A'), 'succ');
+
+            // Extract CheckID
+            var nodes = checkRes.result.meta.AffectedNodes || [];
+            for (var i = 0; i < nodes.length; i++) {
+                if (nodes[i].CreatedNode && nodes[i].CreatedNode.LedgerEntryType === 'Check') {
+                    checkID = nodes[i].CreatedNode.LedgerIndex; break;
+                }
+            }
+            // Same Xaman-synthetic-success fallback as the main create flow
+            if (!checkID) {
+                checkID = await fetchCheckIDForSub(c, sub.address, wallet.address);
+            }
+            if (!checkID) throw new Error('Could not extract CheckID from CheckCreate metadata or account_objects.');
+            lg('Check ID: ' + checkID.slice(0, 12) + '...', 'succ');
         }
-        if (!checkID) throw new Error('Could not extract CheckID from CheckCreate metadata or account_objects.');
-        lg('Check ID: ' + checkID.slice(0, 12) + '...', 'succ');
 
         // Step 3: Sub-wallet cashes the check
         showLoad('CASHING CHECK (AUTO-TRUST)...');
@@ -2865,11 +2968,14 @@ function discardPending(pendingId) {
 // AffectedNodes metadata, find the Check object via account_objects.
 // We look for a Check on the sub-wallet (Destination) sent by primary
 // (Account). Returns the LedgerIndex (CheckID) or null.
-// Retries briefly because the ledger may need a moment after Xaman's
-// confirmation for our node to see the new Check object.
+// Retries up to 60 seconds with progress logging because mainnet
+// propagation can be slow during congested periods, and Xaman's
+// submission node may be ahead of the user's queried node.
 // ============================================================
 async function fetchCheckIDForSub(c, subAddress, primaryAddress) {
-    for (var attempt = 0; attempt < 8; attempt++) {  // up to 8 * 2s = 16s
+    var ATTEMPTS = 30;     // 30 * 2s = 60s ceiling
+    var GAP_MS = 2000;
+    for (var attempt = 0; attempt < ATTEMPTS; attempt++) {
         try {
             var resp = await c.request({
                 command: 'account_objects',
@@ -2882,13 +2988,18 @@ async function fetchCheckIDForSub(c, subAddress, primaryAddress) {
             for (var i = objs.length - 1; i >= 0; i--) {
                 var o = objs[i];
                 if (o.LedgerEntryType === 'Check' && o.Account === primaryAddress && o.Destination === subAddress) {
+                    if (attempt > 0) lg('Check found via account_objects after ' + ((attempt + 1) * GAP_MS / 1000) + 's.', 'succ');
                     return o.index;
                 }
             }
         } catch(e) {
             // actNotFound is expected if sub-wallet metadata hasn't propagated yet
         }
-        await new Promise(function(r){ setTimeout(r, 2000); });
+        // Surface progress every ~10s
+        if (attempt > 0 && attempt % 5 === 0) {
+            showLoad('LOOKING FOR CHECK ON LEDGER... (' + (attempt * GAP_MS / 1000) + 's)');
+        }
+        await new Promise(function(r){ setTimeout(r, GAP_MS); });
     }
     return null;
 }
@@ -5089,9 +5200,14 @@ async function _xamanPoll(uuid) {
     _xamanCancelled = false;
     var cfg = _devGetConfig();
     var proxy = cfg.xamanUrl || DEFAULT_XAMAN_PROXY;
-    for (var i = 0; i < 60; i++) {
+    // Adaptive polling: tight 1s checks for the first 40s (most users sign
+    // within this window), then back off to 3s to be gentle on the proxy.
+    // Total ceiling: 40 * 1s + 30 * 3s = 130s (was 60 * 3s = 180s).
+    var totalAttempts = 70;
+    for (var i = 0; i < totalAttempts; i++) {
         if (_xamanCancelled) return { signed: false, cancelled: true };
-        await new Promise(function(res) { setTimeout(res, 3000); });
+        var gap = i < 40 ? 1000 : 3000;
+        await new Promise(function(res) { setTimeout(res, gap); });
         try {
             var r = await fetch(proxy + '/api/payload/' + uuid);
             var s = await r.json();
