@@ -1,7 +1,7 @@
 {
-  "version": 1,
-  "updated": "2026-04-19",
-  "appName": "XMEME Precision Escrow Terminal",
+  "version": 2,
+  "updated": "2026-04-29",
+  "appName": "XRPMAN Precision Escrow Terminal",
   "announcement": "",
   "gate": {
     "enabled": false,
