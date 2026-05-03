@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XRPMAN | Precision Escrow Terminal v2.0</title>
+    <title>XRPMAN | Precision Escrow Terminal v3.0.1</title>
     <!-- Speed: establish connections early, fetch fonts in parallel with CSS -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -624,7 +624,7 @@
 <div class="studio-banner logo-tap" id="studio-banner" onclick="devLogoTap()">XRPMAN STUDIOS PRESENTS</div>
 <div class="hdr">
     <h1>PRECISION ESCROW TERMINAL<span id="gate-badge" class="gate-badge gate-free">FREE ACCESS</span></h1>
-    <div class="sub">SELF-CUSTODY TOKEN VAULT &mdash; SUB-WALLET ARCHITECTURE &mdash; v3.0</div>
+    <div class="sub">SELF-CUSTODY TOKEN VAULT &mdash; SUB-WALLET ARCHITECTURE &mdash; v3.0.1</div>
     <div class="ntog" id="netTog">
         <button onclick="switchNet(this,'test')">TESTNET</button>
         <button class="on" onclick="switchNet(this,'main')">MAINNET</button>
@@ -979,8 +979,16 @@ function copyToClipboard(text) {
 // ============================================================
 var NETS = {
     test: ["wss://s.altnet.rippletest.net:51233"],
-    main: ["wss://xrplcluster.com","wss://s1.ripple.com","wss://s2.ripple.com"]
+    main: [
+        "wss://xrplcluster.com",     // InFTF — Xaman's default submission cluster (try first for tx affinity)
+        "wss://xrpl.ws",             // InFTF alias — different DNS/load-balancer entrypoint
+        "wss://xrpl.link",           // XRPL Labs fallback (used by xrpl-client default rotation)
+        "wss://s1.ripple.com",       // Ripple — general-purpose cluster
+        "wss://s2.ripple.com",       // Ripple — full-history cluster
+        "wss://honeycluster.io"      // Honeycluster — fully independent operator (Clio + full history)
+    ]
 };
+var _currentNodeIdx = 0;  // round-robin pointer for failover rotation
 var NET = "main";
 
 // ════════════════════════════════════════════════════════════════════
@@ -1549,18 +1557,26 @@ function saveWalletJson() {
 async function getClient() {
     if (client && client.isConnected()) return client;
     var nodes = NETS[NET];
-    for (var i = 0; i < nodes.length; i++) {
+    // Try each node in rotation, starting from the current index. This way,
+    // if one node times out and triggers a reconnect (which advances the
+    // index), getClient() picks a different node instead of the broken one.
+    for (var attempt = 0; attempt < nodes.length; attempt++) {
+        var idx = (_currentNodeIdx + attempt) % nodes.length;
+        var url = nodes[idx];
         try {
-            lg('Connecting to ' + nodes[i] + '...');
-            var c = new xrpl.Client(nodes[i], { timeout: 25000 });
+            lg('Connecting to ' + url + '...', 'inf');
+            var c = new xrpl.Client(url, { timeout: 25000 });
             await c.connect();
-            lg('Connected.', 'succ');
+            lg('Connected: ' + url, 'succ');
             client = c;
+            _currentNodeIdx = idx;  // remember which node we're on
             c.on('disconnected', function() { client = null; });
             return c;
-        } catch (e) { lg('Node failed: ' + e.message, 'err'); }
+        } catch (e) {
+            lg('Node ' + url + ' failed: ' + e.message, 'err');
+        }
     }
-    throw new Error('All nodes failed. Check internet.');
+    throw new Error('All ' + nodes.length + ' XRPL nodes failed. Check your internet connection.');
 }
 
 // ============================================================
@@ -1653,10 +1669,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
         if (client) { try { client.disconnect(); } catch(x) {} client = null; }
         c = await getClient();
 
-        var delTx = await c.autofill({
+        var delTx = await subWalletAutofill(c, sub, {
             TransactionType: 'AccountDelete', Account: sub.address,
             Destination: destAddress, Fee: '200000'
-        });
+        }, { ledgerBuffer: 100 });
         delTx.Fee = '200000';
         delTx.LastLedgerSequence = currentLedger + 100;
 
@@ -2720,15 +2736,14 @@ async function createEscrow() {
         // Step 3: Sub-wallet cashes the check
         showLoad('CASHING CHECK (AUTO-TRUST)...');
         lg('Sub-wallet cashing check...', 'inf');
-        var cashTx = await c.autofill({
+        var cashTx = await subWalletAutofill(c, sub, {
             TransactionType: 'CheckCash',
             Account: sub.address,
             CheckID: checkID,
             Amount: { currency: currency, issuer: issuer, value: amount.toString() },
             Fee: '12',
             Memos: memoBundle.memos
-        });
-        cashTx.LastLedgerSequence = cashTx.LastLedgerSequence + 50; // extra headroom for slow nodes
+        }, { ledgerBuffer: 150 }); // +150 ledger headroom — auto-trustline can be slow
         var cashRes = await c.submitAndWait(sub.sign(cashTx).tx_blob);
         if (cashRes.result.meta.TransactionResult !== 'tesSUCCESS') {
             if (cashRes.result.meta.TransactionResult === 'tecNO_LINE_INSUF_RESERVE') {
@@ -2821,16 +2836,64 @@ async function createEscrow() {
     } catch (e) {
         showErr(e.message);
         if (savedSubSeed && sub) {
+            // Stash the seed in module-scope keyed by address so the user can
+            // reveal & copy it via an explicit action. Never display the raw
+            // seed in normal log output (auditor patch #7) — screenshots and
+            // shared session recordings have leaked seeds in the past.
+            window._xrpmanRecoverySeeds = window._xrpmanRecoverySeeds || {};
+            window._xrpmanRecoverySeeds[sub.address] = savedSubSeed;
+
+            var maskedSeed = (savedSubSeed.length >= 8)
+                ? savedSubSeed.slice(0, 4) + '\u2022'.repeat(savedSubSeed.length - 8) + savedSubSeed.slice(-4)
+                : '\u2022'.repeat(savedSubSeed.length);
+
             lg('--- RECOVERY: SUB-WALLET WAS FUNDED ---', 'err');
             lg('The escrow process failed but the sub-wallet may have received XRP.', 'err');
             lg('Address: ' + sub.address, 'inf');
-            lg('Seed: ' + savedSubSeed, 'inf');
-            lg('Use this seed to recover any funds sent to the sub-wallet.', 'inf');
+            lg('Seed (masked): ' + maskedSeed, 'inf');
+            lg('To reveal & copy the recovery seed, run xrpmanRevealSeed("' + sub.address + '") in the browser console. \u26a0 Do NOT screenshot or share.', 'inf');
             lg('--- END RECOVERY ---', 'err');
-            alert('ESCROW FAILED — but the sub-wallet may have been funded.\n\nSave this seed to recover funds:\n' + savedSubSeed + '\n\nAddress: ' + sub.address);
+
+            // One-shot critical alert — masked by default. User must
+            // explicitly tap "REVEAL" inside the alert flow to see the seed.
+            // We use confirm() so a single tap shows the seed; otherwise the
+            // seed never leaves the page's memory in visible form.
+            var warned = confirm(
+                'ESCROW FAILED \u2014 sub-wallet may be funded.\n\n' +
+                'Address: ' + sub.address + '\n' +
+                'Seed: ' + maskedSeed + ' (masked)\n\n' +
+                '\u26a0 The recovery seed is hidden. Tap OK to reveal & copy it to your clipboard.\n' +
+                'DO NOT screenshot the next dialog. Anyone with the seed controls this sub-wallet.'
+            );
+            if (warned) {
+                xrpmanRevealSeed(sub.address);
+            }
         }
     } finally {
         hideLoad();
+    }
+}
+
+// Reveal & copy a stashed recovery seed exactly once. Exposed on window so
+// users can run it from console even if the alert flow was dismissed. Does
+// NOT log the raw seed — only writes to clipboard with a brief on-screen
+// confirmation that auto-clears.
+function xrpmanRevealSeed(address) {
+    var pool = window._xrpmanRecoverySeeds || {};
+    var seed = pool[address];
+    if (!seed) {
+        alert('No recovery seed stashed for ' + address + '. (Seeds are cleared on page reload.)');
+        return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(seed).then(function(){
+            lg('Recovery seed for ' + address.slice(0,8) + '... copied to clipboard. Paste into a secure location and clear clipboard when done.', 'succ');
+        }).catch(function(){
+            // Clipboard blocked — fall back to one-time prompt
+            window.prompt('Recovery seed (copy now, do NOT screenshot):', seed);
+        });
+    } else {
+        window.prompt('Recovery seed (copy now, do NOT screenshot):', seed);
     }
 }
 
@@ -3005,15 +3068,14 @@ async function runResumePending(pending, userPw, adminPw) {
 
         // Step 3: Sub-wallet cashes the check
         showLoad('CASHING CHECK (AUTO-TRUST)...');
-        var cashTx = await c.autofill({
+        var cashTx = await subWalletAutofill(c, sub, {
             TransactionType: 'CheckCash',
             Account: sub.address,
             CheckID: checkID,
             Amount: { currency: pending.currencyHex, issuer: pending.issuer, value: pending.amount },
             Fee: '12',
             Memos: pending.memos
-        });
-        cashTx.LastLedgerSequence = cashTx.LastLedgerSequence + 50;
+        }, { ledgerBuffer: 150 });
         var cashRes = await c.submitAndWait(sub.sign(cashTx).tx_blob);
         if (cashRes.result.meta.TransactionResult !== 'tesSUCCESS') {
             if (cashRes.result.meta.TransactionResult === 'tecNO_LINE_INSUF_RESERVE') {
@@ -3182,6 +3244,51 @@ function decodeSignedSequence(hex) {
     } catch(e) { return null; }
 }
 
+// Resilient RPC wrapper. Wraps c.request with a short per-request timeout
+// (8s instead of xrpl.js's 25s default), exponential backoff between attempts,
+// and a forced WebSocket reconnect on timeout — the cluster occasionally hands
+// us a node that accepts the connection but stops responding to commands; the
+// reconnect lets getClient() pick a different node from the failover list.
+async function requestWithRetry(req, opts) {
+    opts = opts || {};
+    var attempts = (typeof opts.attempts === 'number') ? opts.attempts : 5;
+    var perReqTimeout = (typeof opts.timeout === 'number') ? opts.timeout : 8000;
+    var backoffs = opts.backoffs || [1500, 3000, 5000, 8000, 13000];
+    var label = opts.label || (req.command + ' ' + (req.account ? req.account.slice(0,8) + '...' : ''));
+    var lastErr = null;
+    for (var i = 0; i < attempts; i++) {
+        try {
+            var c = await getClient();
+            return await c.request(req, perReqTimeout);
+        } catch (e) {
+            lastErr = e;
+            var msg = (e && e.message) || String(e);
+            var isTimeout = /Timeout/i.test(msg);
+            var isDisconnect = /not connected|disconnected|NotConnectedError/i.test(msg);
+
+            // Always rotate + disconnect on timeout/disconnect, even when this
+            // was the last attempt. Otherwise callers that pass attempts:1
+            // (e.g. waitForAccountValidated) would burn cycle after cycle on
+            // the same broken client because client.isConnected() still
+            // returns true on a hung-but-not-dropped socket.
+            if (isTimeout || isDisconnect) {
+                var nodeCount = (NETS[NET] || []).length || 1;
+                _currentNodeIdx = (_currentNodeIdx + 1) % nodeCount;
+                lg('RPC timeout during ' + label + '; rotating to ' + (NETS[NET][_currentNodeIdx] || '?') +
+                   ' (attempt ' + (i + 1) + '/' + attempts + ')...', 'inf');
+                try { if (client) await client.disconnect().catch(function(){}); } catch (_) {}
+                client = null; // force getClient() to dial the next node in rotation
+            } else {
+                lg('RPC error during ' + label + ' (attempt ' + (i + 1) + '/' + attempts + '): ' + msg, 'inf');
+            }
+
+            if (i === attempts - 1) break;  // rotation already done; exit loop now
+            await new Promise(function(r){ setTimeout(r, backoffs[Math.min(i, backoffs.length - 1)]); });
+        }
+    }
+    throw lastErr || new Error('RPC ' + label + ' failed after ' + attempts + ' attempts.');
+}
+
 // Block until our queried node sees the given account as activated (auditor
 // patch #3, addresses H5). Xaman submits via its own infrastructure; the node
 // xrpl.js connects to may lag a few ledgers. Calling this between fund-Payment
@@ -3192,17 +3299,21 @@ async function waitForAccountValidated(c, address, maxMs) {
     var attempts = 0;
     while (Date.now() < deadline) {
         try {
-            var r = await c.request({
+            // Use a short per-request timeout (8s) so we don't burn the whole
+            // deadline on a single hung request. Reconnect on timeout via
+            // requestWithRetry's internal logic — single attempt here, retry
+            // loop is the outer while.
+            var r = await requestWithRetry({
                 command: 'account_info',
                 account: address,
                 ledger_index: 'validated'
-            });
+            }, { attempts: 1, timeout: 8000, label: 'account_info ' + address.slice(0,8) });
             if (r && r.result && r.result.account_data && r.result.account_data.Balance) {
-                if (attempts > 0) lg('Sub-wallet visible after ' + (attempts * 2) + 's of propagation wait.', 'succ');
+                if (attempts > 0) lg('Sub-wallet account confirmed after retry ' + attempts + '.', 'succ');
                 return r.result.account_data;
             }
-        } catch(e) {
-            // actNotFound is expected during propagation
+        } catch (e) {
+            // actNotFound is expected during propagation; timeouts handled by requestWithRetry
         }
         attempts++;
         if (attempts > 0 && attempts % 3 === 0) {
@@ -3210,9 +3321,45 @@ async function waitForAccountValidated(c, address, maxMs) {
         }
         await new Promise(function(r){ setTimeout(r, 2000); });
     }
-    var err = new Error('Sub-wallet not visible on the queried node within ' + (maxMs/1000) + 's. The fund transaction may still be propagating — try again in a minute.');
+    var err = new Error('CheckCash blocked: sub-wallet not confirmed after ' + (maxMs/1000) + 's of retries. The fund transaction may still be propagating — try again in a minute.');
     err.activationTimeout = true;
     throw err;
+}
+
+// Replacement for xrpl.js's c.autofill() when the signing account is a
+// freshly-activated sub-wallet. xrpl.js autofill internally calls
+// account_info(account, ledger_index:'current') to read Sequence — that
+// request times out (~25s, websocket id) on cluster nodes that just barely
+// see the activation Payment. We instead use waitForAccountValidated (which
+// queries 'validated', the most-recent fully-confirmed ledger) plus a single
+// 'ledger' command for LastLedgerSequence. No 'current' lookups.
+async function subWalletAutofill(c, sub, txjson, opts) {
+    opts = opts || {};
+    var ledgerBuffer = (typeof opts.ledgerBuffer === 'number') ? opts.ledgerBuffer : 100;
+    var maxWaitMs   = (typeof opts.maxWaitMs   === 'number') ? opts.maxWaitMs   : 60000;
+
+    // 1) Sub's account_data via the retry-tolerant validated-ledger path.
+    var acctData = await waitForAccountValidated(c, sub.address, maxWaitMs);
+
+    // 2) Current validated ledger index for LastLedgerSequence ceiling.
+    //    Wrapped in requestWithRetry to survive cluster node hangs — same
+    //    failure mode that took down the CheckCash flow before this patch.
+    var ledgerResp = await requestWithRetry(
+        { command: 'ledger', ledger_index: 'validated' },
+        { attempts: 5, timeout: 8000, label: 'ledger validated' }
+    );
+    var currentLedger = ledgerResp.result.ledger_index;
+
+    // 3) Pre-populate the fields autofill would have queried for. Anything
+    //    the caller already set takes precedence (e.g. an explicit Sequence
+    //    override for chained transactions).
+    var filled = {};
+    Object.keys(txjson).forEach(function(k) { filled[k] = txjson[k]; });
+    if (filled.Account == null)            filled.Account = sub.address;
+    if (filled.Sequence == null)           filled.Sequence = acctData.Sequence;
+    if (filled.LastLedgerSequence == null) filled.LastLedgerSequence = currentLedger + ledgerBuffer;
+    if (filled.Fee == null)                filled.Fee = '12';
+    return filled;
 }
 
 async function fetchCheckIDForSub(c, subAddress, primaryAddress) {
@@ -3664,7 +3811,7 @@ async function claimEscrow() {
             var line = lines.result.lines[i];
             if (parseFloat(line.balance) > 0) {
                 lg('Sweeping ' + line.balance + ' ' + hexToCurrency(line.currency) + '...', 'inf');
-                var payTx = await c.autofill({
+                var payTx = await subWalletAutofill(c, sub, {
                     TransactionType: 'Payment',
                     Account: sub.address,
                     Destination: wallet.address,
@@ -3686,7 +3833,7 @@ async function claimEscrow() {
             // Remove trust line
             showLoad('REMOVING TRUST LINES...');
             try {
-                var tlTx = await c.autofill({
+                var tlTx = await subWalletAutofill(c, sub, {
                     TransactionType: 'TrustSet',
                     Account: sub.address,
                     Flags: 131072,
@@ -5532,6 +5679,9 @@ function xamanCancel() { _xamanCancelled = true; }
 // First tap fires the deep link as normal. Subsequent taps are blocked
 // until the request resolves (success/cancel/timeout/abort), at which
 // point the overlay closes and state resets.
+var _xamanWaitTickHandle = null;
+var _xamanWaitStartedAt = 0;
+
 function _xamanResetOpenButton() {
     var link = document.getElementById('xaman-link');
     var btn  = document.getElementById('xaman-open-btn');
@@ -5539,6 +5689,8 @@ function _xamanResetOpenButton() {
     if (link) link.classList.remove('is-waiting');
     if (btn)  btn.classList.remove('is-waiting');
     if (lbl)  lbl.textContent = 'OPEN IN XAMAN';
+    if (_xamanWaitTickHandle) { clearInterval(_xamanWaitTickHandle); _xamanWaitTickHandle = null; }
+    _xamanWaitStartedAt = 0;
 }
 
 function _xamanMarkOpenButtonWaiting() {
@@ -5550,17 +5702,38 @@ function _xamanMarkOpenButtonWaiting() {
     if (lbl)  lbl.textContent = 'WAITING FOR XAMAN...';
     var statusEl = document.getElementById('xaman-status');
     if (statusEl) statusEl.textContent = 'WAITING FOR XAMAN RESPONSE';
+
+    // Tick the status text with elapsed seconds so the user can see progress
+    // and knows the page isn't frozen. After 30s, change the messaging to
+    // suggest ABORT — a polite admission that something may be stuck.
+    _xamanWaitStartedAt = Date.now();
+    if (_xamanWaitTickHandle) clearInterval(_xamanWaitTickHandle);
+    _xamanWaitTickHandle = setInterval(function() {
+        var elapsed = Math.floor((Date.now() - _xamanWaitStartedAt) / 1000);
+        var statusNow = document.getElementById('xaman-status');
+        if (!statusNow) return;
+        if (elapsed < 30) {
+            statusNow.textContent = 'WAITING FOR XAMAN RESPONSE (' + elapsed + 's)';
+        } else {
+            statusNow.textContent = 'STILL WAITING (' + elapsed + 's) - TAP ABORT TO RETRY';
+        }
+    }, 1000);
 }
 
 // Anchor click handler — return false to block, true to let the deep link fire.
+// Disable SYNCHRONOUSLY (not via setTimeout) — on mobile, the deep link can
+// suspend or background the tab before a setTimeout(0) callback fires, leaving
+// the button visually still-clickable when the user returns from Xaman. The
+// click event has already been queued for default-action processing by the
+// time this handler runs, so adding pointer-events:none here doesn't cancel
+// the navigation that's about to happen.
 function onXamanOpenClick(ev) {
     var btn = document.getElementById('xaman-open-btn');
     if (btn && btn.classList.contains('is-waiting')) {
         if (ev && ev.preventDefault) ev.preventDefault();
         return false;
     }
-    // Mark waiting on the next tick so the browser still navigates the <a>.
-    setTimeout(_xamanMarkOpenButtonWaiting, 0);
+    _xamanMarkOpenButtonWaiting();
     return true;
 }
 
