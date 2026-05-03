@@ -271,8 +271,12 @@
         @keyframes xamanIn{from{transform:scale(0.9) translateY(12px);opacity:0}to{transform:scale(1) translateY(0);opacity:1}}
         .xaman-hdr{font-family:'Orbitron',monospace;font-weight:bold;font-size:16px;letter-spacing:3px;color:var(--cyan);text-shadow:0 0 12px rgba(0,255,255,0.5);margin-bottom:8px}
         .xaman-sub{font-size:12px;color:#88ccdd;margin-bottom:14px;font-style:italic}
-        .xaman-btn-primary{width:100%;padding:14px;font-family:'Orbitron',monospace;font-weight:bold;font-size:12px;letter-spacing:3px;background:var(--cyan);color:#000;border:1px solid var(--cyan);cursor:pointer;text-transform:uppercase;box-shadow:0 0 18px rgba(0,255,255,0.4);margin-bottom:8px;transition:all 0.2s}
+        .xaman-btn-primary{width:100%;padding:14px;font-family:'Orbitron',monospace;font-weight:bold;font-size:12px;letter-spacing:3px;background:var(--cyan);color:#000;border:1px solid var(--cyan);cursor:pointer;text-transform:uppercase;box-shadow:0 0 18px rgba(0,255,255,0.4);margin-bottom:8px;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:10px}
         .xaman-btn-primary:hover{background:#66ffff;box-shadow:0 0 24px rgba(0,255,255,0.6)}
+        .xaman-btn-primary.is-waiting{background:#001a22;color:var(--cyan);border-color:#226677;box-shadow:none;cursor:not-allowed;pointer-events:none;opacity:.85}
+        .xaman-btn-primary .xaman-spin{width:14px;height:14px;border:2px solid rgba(0,255,255,0.25);border-top-color:var(--cyan);border-radius:50%;animation:sp .7s linear infinite;display:none}
+        .xaman-btn-primary.is-waiting .xaman-spin{display:inline-block}
+        #xaman-link.is-waiting{pointer-events:none}
         .xaman-btn-alt{flex:1;padding:9px;font-family:'Orbitron',monospace;font-size:10px;letter-spacing:2px;background:#001a22;border:1px solid #226677;color:var(--cyan);cursor:pointer;text-transform:uppercase}
         .xaman-btn-alt:hover{background:var(--cyan);color:#000}
         #xaman-status{font-family:'Orbitron',monospace;font-weight:bold;font-size:11px;letter-spacing:2px;color:var(--neon);text-shadow:0 0 6px rgba(0,255,0,0.4);margin-top:14px;padding:8px;border:1px solid rgba(0,255,0,0.3);background:rgba(0,255,0,0.04);animation:statusPulse 1.8s ease-in-out infinite}
@@ -545,8 +549,11 @@
     <div class="xaman-card">
         <div class="xaman-hdr">&#9889; APPROVE IN XAMAN</div>
         <div class="xaman-sub">Signal sent to your Xaman app.</div>
-        <a id="xaman-link" href="#" target="_blank" rel="noopener" style="display:block;text-decoration:none">
-            <button class="xaman-btn-primary">OPEN IN XAMAN</button>
+        <a id="xaman-link" href="#" target="_blank" rel="noopener" onclick="return onXamanOpenClick(event)" style="display:block;text-decoration:none">
+            <button id="xaman-open-btn" class="xaman-btn-primary" type="button">
+                <span class="xaman-spin" aria-hidden="true"></span>
+                <span id="xaman-open-label">OPEN IN XAMAN</span>
+            </button>
         </a>
         <div style="display:flex;gap:6px">
             <button class="xaman-btn-alt" onclick="showXamanQr()">QR</button>
@@ -2530,15 +2537,8 @@ async function createEscrow() {
         var checkHash = checkRes.result.hash || checkRes.result.tx_json && checkRes.result.tx_json.hash || '';
         lg('Check created. TX: ' + (checkHash || 'N/A'), 'succ');
 
-        // Extract CheckID
-        var checkID = null;
-        var nodes = checkRes.result.meta.AffectedNodes || [];
-        for (var i = 0; i < nodes.length; i++) {
-            if (nodes[i].CreatedNode && nodes[i].CreatedNode.LedgerEntryType === 'Check') {
-                checkID = nodes[i].CreatedNode.LedgerIndex;
-                break;
-            }
-        }
+        // Extract CheckID — handles object/string meta + nested tx_json shapes
+        var checkID = extractCheckIDFromMeta(checkRes, sub.address);
         // Fallback: when Xaman returns synthetic success without metadata,
         // we can find the Check via account_objects on the destination.
         if (!checkID) {
@@ -2858,13 +2858,8 @@ async function runResumePending(pending, userPw, adminPw) {
             checkHash = checkRes.result.hash || (checkRes.result.tx_json && checkRes.result.tx_json.hash) || '';
             lg('Check created. TX: ' + (checkHash || 'N/A'), 'succ');
 
-            // Extract CheckID
-            var nodes = checkRes.result.meta.AffectedNodes || [];
-            for (var i = 0; i < nodes.length; i++) {
-                if (nodes[i].CreatedNode && nodes[i].CreatedNode.LedgerEntryType === 'Check') {
-                    checkID = nodes[i].CreatedNode.LedgerIndex; break;
-                }
-            }
+            // Extract CheckID — handles object/string meta + nested tx_json shapes
+            checkID = extractCheckIDFromMeta(checkRes, sub.address);
             // Same Xaman-synthetic-success fallback as the main create flow
             if (!checkID) {
                 checkID = await fetchCheckIDForSub(c, sub.address, wallet.address);
@@ -2972,28 +2967,76 @@ function discardPending(pendingId) {
 // propagation can be slow during congested periods, and Xaman's
 // submission node may be ahead of the user's queried node.
 // ============================================================
+// Pull the CheckID out of a CheckCreate response's metadata, handling all
+// the shapes we've seen in the wild: object meta, string meta (some node
+// configs), and meta nested under tx_json (Xaman's synthetic wrapper).
+// Returns null if no Check creation node is found — caller falls back to
+// account_objects lookup.
+function extractCheckIDFromMeta(checkRes, subAddress) {
+    function walk(meta) {
+        if (!meta) return null;
+        if (typeof meta === 'string') {
+            try { meta = JSON.parse(meta); } catch(e) { return null; }
+        }
+        var nodes = meta.AffectedNodes;
+        if (!Array.isArray(nodes)) return null;
+        for (var i = 0; i < nodes.length; i++) {
+            var cn = nodes[i].CreatedNode;
+            if (!cn || cn.LedgerEntryType !== 'Check') continue;
+            // If we know the destination, prefer the matching node (defensive
+            // against rare multi-Check transactions).
+            var dest = cn.NewFields && cn.NewFields.Destination;
+            if (subAddress && dest && dest !== subAddress) continue;
+            if (cn.LedgerIndex) return cn.LedgerIndex;
+        }
+        return null;
+    }
+    var r = checkRes && checkRes.result;
+    if (!r) return null;
+    return walk(r.meta) ||
+           walk(r.metaData) ||                              // some xrpl.js versions
+           (r.tx_json && (walk(r.tx_json.meta) || walk(r.tx_json.metaData))) ||
+           null;
+}
+
 async function fetchCheckIDForSub(c, subAddress, primaryAddress) {
+    // XRPL Checks live in the SENDER's (primary's) owned-objects directory,
+    // not the destination's. Earlier versions of this helper queried the
+    // sub-wallet, which is why the fallback never found anything and the
+    // user saw "Could not extract CheckID from metadata or account_objects."
+    // We now query the primary and filter by Destination === subAddress.
     var ATTEMPTS = 30;     // 30 * 2s = 60s ceiling
     var GAP_MS = 2000;
     for (var attempt = 0; attempt < ATTEMPTS; attempt++) {
         try {
             var resp = await c.request({
                 command: 'account_objects',
-                account: subAddress,
+                account: primaryAddress,
                 type: 'check',
                 ledger_index: 'validated'
             });
             var objs = (resp.result && resp.result.account_objects) || [];
-            // Most recent matching Check (Account = primary, Destination = sub)
-            for (var i = objs.length - 1; i >= 0; i--) {
+            // Match: this account is the sender, sub is the destination.
+            // Walk newest-first (XRPL returns ordered by creation, latest at end).
+            var matches = [];
+            for (var i = 0; i < objs.length; i++) {
                 var o = objs[i];
-                if (o.LedgerEntryType === 'Check' && o.Account === primaryAddress && o.Destination === subAddress) {
-                    if (attempt > 0) lg('Check found via account_objects after ' + ((attempt + 1) * GAP_MS / 1000) + 's.', 'succ');
-                    return o.index;
+                if (o.LedgerEntryType === 'Check' &&
+                    o.Account === primaryAddress &&
+                    o.Destination === subAddress) {
+                    matches.push(o);
                 }
             }
+            if (matches.length > 0) {
+                // If multiple Checks to this sub exist (shouldn't, since sub is
+                // freshly generated per escrow), pick the highest Sequence.
+                matches.sort(function(a, b) { return (b.Sequence || 0) - (a.Sequence || 0); });
+                if (attempt > 0) lg('Check found via account_objects after ' + ((attempt + 1) * GAP_MS / 1000) + 's.', 'succ');
+                return matches[0].index;
+            }
         } catch(e) {
-            // actNotFound is expected if sub-wallet metadata hasn't propagated yet
+            // Network blip or actNotFound on the primary (extremely rare here);
+            // keep retrying — the Check propagates within a few ledgers.
         }
         // Surface progress every ~10s
         if (attempt > 0 && attempt % 5 === 0) {
@@ -5264,15 +5307,54 @@ function xamanCancel() { _xamanCancelled = true; }
 // ════════════════════════════════════════════════════════════════════
 //   XAMAN OVERLAY — approval modal with deep link / QR / copy / abort
 // ════════════════════════════════════════════════════════════════════
+
+// Spam-guard + spinner state for the OPEN IN XAMAN button.
+// First tap fires the deep link as normal. Subsequent taps are blocked
+// until the request resolves (success/cancel/timeout/abort), at which
+// point the overlay closes and state resets.
+function _xamanResetOpenButton() {
+    var link = document.getElementById('xaman-link');
+    var btn  = document.getElementById('xaman-open-btn');
+    var lbl  = document.getElementById('xaman-open-label');
+    if (link) link.classList.remove('is-waiting');
+    if (btn)  btn.classList.remove('is-waiting');
+    if (lbl)  lbl.textContent = 'OPEN IN XAMAN';
+}
+
+function _xamanMarkOpenButtonWaiting() {
+    var link = document.getElementById('xaman-link');
+    var btn  = document.getElementById('xaman-open-btn');
+    var lbl  = document.getElementById('xaman-open-label');
+    if (link) link.classList.add('is-waiting');
+    if (btn)  btn.classList.add('is-waiting');
+    if (lbl)  lbl.textContent = 'WAITING FOR XAMAN...';
+    var statusEl = document.getElementById('xaman-status');
+    if (statusEl) statusEl.textContent = 'WAITING FOR XAMAN RESPONSE';
+}
+
+// Anchor click handler — return false to block, true to let the deep link fire.
+function onXamanOpenClick(ev) {
+    var btn = document.getElementById('xaman-open-btn');
+    if (btn && btn.classList.contains('is-waiting')) {
+        if (ev && ev.preventDefault) ev.preventDefault();
+        return false;
+    }
+    // Mark waiting on the next tick so the browser still navigates the <a>.
+    setTimeout(_xamanMarkOpenButtonWaiting, 0);
+    return true;
+}
+
 function showXamanOverlay(link, qr) {
     document.getElementById('xaman-link').href = link || '#';
     document.getElementById('xaman-qr-img').src = qr || '';
     document.getElementById('xaman-qr-box').style.display = 'none';
     document.getElementById('xaman-status').textContent = 'AWAITING · APPROVAL';
+    _xamanResetOpenButton();
     document.getElementById('xaman-overlay').style.display = 'flex';
 }
 function hideXamanOverlay() {
     document.getElementById('xaman-overlay').style.display = 'none';
+    _xamanResetOpenButton();
 }
 function showXamanQr() {
     document.getElementById('xaman-qr-box').style.display = 'block';
