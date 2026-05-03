@@ -1600,8 +1600,51 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
         var currentLedger = ledgerResp.result.ledger_index;
         var gap = currentLedger - acctSeq;
 
-        lg('Delete check: ' + bal.toFixed(2) + ' XRP | Objects: ' + ownerCount + ' | Gap: ' + gap + '/256', 'inf');
+        // OwnerCount alone lies for AccountDelete preconditions: trust lines at
+        // default state on this side (balance=0, limit=0) don't add to OwnerCount
+        // but the RippleState ledger entry still exists and blocks AccountDelete.
+        // Same for stranded Checks where this account is the destination.
+        // Query account_objects directly and check for the actual blocking types.
+        var BLOCKING_TYPES = { Check: 1, Escrow: 1, NFTokenPage: 1, PayChannel: 1, RippleState: 1 };
+        var blockers = [];
+        try {
+            var objsResp = await c.request({
+                command: 'account_objects',
+                account: sub.address,
+                ledger_index: 'validated'
+            });
+            var allObjs = (objsResp.result && objsResp.result.account_objects) || [];
+            for (var bi = 0; bi < allObjs.length; bi++) {
+                if (BLOCKING_TYPES[allObjs[bi].LedgerEntryType]) blockers.push(allObjs[bi]);
+            }
+        } catch(e) {
+            // If account_objects fails, fall back to OwnerCount as a coarse signal
+            lg('account_objects probe failed: ' + e.message + ' — using OwnerCount as fallback.', 'inf');
+        }
 
+        lg('Delete check: ' + bal.toFixed(2) + ' XRP | OwnerCount: ' + ownerCount + ' | Blockers: ' + blockers.length + ' | Gap: ' + gap + '/256', 'inf');
+
+        // Surface each blocker so the user knows exactly what's holding the delete up.
+        if (blockers.length > 0) {
+            for (var bj = 0; bj < blockers.length; bj++) {
+                var bo = blockers[bj];
+                if (bo.LedgerEntryType === 'RippleState') {
+                    var hi = bo.HighLimit || {}, lo = bo.LowLimit || {};
+                    var curHex = hi.currency || lo.currency || '';
+                    var rsBal = parseFloat((bo.Balance && bo.Balance.value) || '0');
+                    var counterparty = (hi.issuer === sub.address) ? lo.issuer : hi.issuer;
+                    lg('  Blocker: TrustLine ' + hexToCurrency(curHex) +
+                       ' bal=' + rsBal +
+                       ' counterparty=' + truncAddr(counterparty || '?'), 'err');
+                } else {
+                    lg('  Blocker: ' + bo.LedgerEntryType + ' ' + (bo.index || '').slice(0, 12) + '...', 'err');
+                }
+            }
+            return 'has_objects';
+        }
+
+        // Fallback for the rare case account_objects failed but OwnerCount is also
+        // non-zero — keep the old behavior so we don't waste a 0.2 XRP burn fee.
         if (ownerCount > 0) return 'has_objects';
         if (gap < 256) return 'too_soon';
 
@@ -1889,17 +1932,23 @@ async function submitAsPrimary(c, txjson, label, opts) {
     async function checkCreatedProbe() {
         if (!opts.verifyCheckCreated || !txjson.Destination || !txjson.Account) return null;
         try {
+            // Checks live in the SENDER's directory of owned objects, never the destination's.
             var resp = await c.request({
                 command: 'account_objects',
-                account: txjson.Destination, type: 'check', ledger_index: 'validated'
+                account: txjson.Account, type: 'check', ledger_index: 'validated'
             });
             var objs = (resp.result && resp.result.account_objects) || [];
-            for (var i = objs.length - 1; i >= 0; i--) {
+            // Newest match wins (highest Sequence) in case multiple checks to same dest exist.
+            var matches = [];
+            for (var i = 0; i < objs.length; i++) {
                 var o = objs[i];
                 if (o.LedgerEntryType === 'Check' && o.Account === txjson.Account && o.Destination === txjson.Destination) {
-                    return o.index;
+                    matches.push(o);
                 }
             }
+            if (matches.length === 0) return null;
+            matches.sort(function(a, b) { return (b.Sequence || 0) - (a.Sequence || 0); });
+            return matches[0].index;
         } catch(e) {}
         return null;
     }
@@ -1968,6 +2017,37 @@ async function submitAsPrimary(c, txjson, label, opts) {
             lg(label + ' confirmed via late Check probe. CheckID: ' + lateCheckID.slice(0,12) + '...', 'succ');
             return syntheticCheckSuccess(lateCheckID);
         }
+
+        // AUDITOR PATCH #5: never return empty AffectedNodes for a CheckCreate
+        // without a CheckID. Try deterministic derivation from the signed
+        // Sequence — Xaman gave us the signed blob, which contains the exact
+        // Sequence the network will assign on inclusion. Combined with the
+        // sender AccountID and the Check namespace byte, that uniquely pins
+        // the CheckID without any network query.
+        if (opts.verifyCheckCreated && result.hex) {
+            var seq = decodeSignedSequence(result.hex);
+            if (seq != null) {
+                try {
+                    var derivedID = await deriveCheckID(s.address, seq);
+                    lg(label + ' CheckID derived from signed Sequence (' + seq + '): ' + derivedID.slice(0,12) + '...', 'succ');
+                    return syntheticCheckSuccess(derivedID);
+                } catch (derivErr) {
+                    lg('CheckID derivation failed: ' + derivErr.message, 'inf');
+                }
+            }
+        }
+
+        // CheckCreate that reached this point with no derivable ID is unsafe to
+        // fake-succeed — downstream CheckCash needs a real CheckID. Throw with
+        // a resumable timeout flag so the caller can persist pending state.
+        if (opts.verifyCheckCreated) {
+            var ce = new Error(label + ' validated by Xaman but CheckID not yet derivable on this node. Resume from PENDING ESCROWS in 1 minute.');
+            ce.xamanTimeout = true;
+            ce.txid = result.txid;
+            ce.dispatched = result.dispatched;
+            throw ce;
+        }
+
         lg(label + ' validated by Xaman; proceeding without local metadata.', 'succ');
         return {
             result: {
@@ -2479,6 +2559,21 @@ async function createEscrow() {
         // [9.1] Fund tx hash
         var fundHash = fundRes.result.hash || fundRes.result.tx_json && fundRes.result.tx_json.hash || '';
         lg('Sub-wallet funded. TX: ' + (fundHash || 'N/A'), 'succ');
+
+        // AUDITOR PATCH #3: gate CheckCreate behind sub-wallet visibility on
+        // our queried node. Xaman submits via its own infrastructure; our
+        // node may lag a few ledgers. Without this wait, CheckCreate can hit
+        // tecNO_DST when our node hasn't yet seen the activating Payment.
+        try {
+            await waitForAccountValidated(c, sub.address, 90000);
+        } catch (waitErr) {
+            // If sub never appears, save pending state and rethrow with timeout flag.
+            if (waitErr && waitErr.activationTimeout) {
+                waitErr.xamanTimeout = true;
+                waitErr.txid = fundHash;
+            }
+            throw waitErr;
+        }
 
         // Step 2: Create Check
         showLoad('CREATING TOKEN CHECK...');
@@ -2999,46 +3094,130 @@ function extractCheckIDFromMeta(checkRes, subAddress) {
            null;
 }
 
+// Deterministic CheckID derivation from sender + sequence (auditor patch #4).
+// Per XRPL ledger-object hash spec: CheckID = SHA-512Half(0x0043 || AccountID(20) || Sequence_BE32).
+// 0x0043 is the namespace byte for Check ('C' = 0x43). This lets us know the
+// CheckID without ever reading the metadata or querying account_objects —
+// useful when Xaman dispatched the tx but our queried node hasn't seen it yet.
+async function deriveCheckID(senderAddress, sequence) {
+    if (!window.xrpl || typeof xrpl.decodeAccountID !== 'function') {
+        throw new Error('xrpl.js not loaded — cannot derive CheckID');
+    }
+    if (typeof sequence !== 'number' || sequence <= 0) {
+        throw new Error('Invalid sequence for CheckID derivation: ' + sequence);
+    }
+    var accountId = xrpl.decodeAccountID(senderAddress);
+    if (!(accountId instanceof Uint8Array)) accountId = new Uint8Array(accountId);
+    if (accountId.length !== 20) throw new Error('AccountID is not 20 bytes');
+
+    var buf = new Uint8Array(2 + 20 + 4);
+    buf[0] = 0x00; buf[1] = 0x43;            // Check namespace
+    buf.set(accountId, 2);                   // 20-byte AccountID
+    buf[22] = (sequence >>> 24) & 0xff;      // Sequence as big-endian uint32
+    buf[23] = (sequence >>> 16) & 0xff;
+    buf[24] = (sequence >>>  8) & 0xff;
+    buf[25] =  sequence         & 0xff;
+
+    var fullHash = await crypto.subtle.digest('SHA-512', buf);
+    var halfView = new Uint8Array(fullHash, 0, 32);  // SHA-512Half = first 32 bytes
+    var hex = '';
+    for (var i = 0; i < halfView.length; i++) {
+        var b = halfView[i].toString(16);
+        if (b.length === 1) b = '0' + b;
+        hex += b;
+    }
+    return hex.toUpperCase();
+}
+
+// Pull the effective Sequence (or TicketSequence fallback) out of a signed
+// transaction blob hex. Used to deterministically derive CheckID from Xaman's
+// signed-but-not-yet-visible CheckCreate without waiting on the network.
+function decodeSignedSequence(hex) {
+    try {
+        if (!window.xrpl || typeof xrpl.decode !== 'function') return null;
+        var d = xrpl.decode(hex);
+        if (typeof d.Sequence === 'number' && d.Sequence > 0) return d.Sequence;
+        if (typeof d.TicketSequence === 'number' && d.TicketSequence > 0) return d.TicketSequence;
+        return null;
+    } catch(e) { return null; }
+}
+
+// Block until our queried node sees the given account as activated (auditor
+// patch #3, addresses H5). Xaman submits via its own infrastructure; the node
+// xrpl.js connects to may lag a few ledgers. Calling this between fund-Payment
+// and CheckCreate eliminates the tecNO_DST race.
+async function waitForAccountValidated(c, address, maxMs) {
+    maxMs = maxMs || 90000;
+    var deadline = Date.now() + maxMs;
+    var attempts = 0;
+    while (Date.now() < deadline) {
+        try {
+            var r = await c.request({
+                command: 'account_info',
+                account: address,
+                ledger_index: 'validated'
+            });
+            if (r && r.result && r.result.account_data && r.result.account_data.Balance) {
+                if (attempts > 0) lg('Sub-wallet visible after ' + (attempts * 2) + 's of propagation wait.', 'succ');
+                return r.result.account_data;
+            }
+        } catch(e) {
+            // actNotFound is expected during propagation
+        }
+        attempts++;
+        if (attempts > 0 && attempts % 3 === 0) {
+            showLoad('CONFIRMING SUB-WALLET ON LEDGER... (' + (attempts * 2) + 's)');
+        }
+        await new Promise(function(r){ setTimeout(r, 2000); });
+    }
+    var err = new Error('Sub-wallet not visible on the queried node within ' + (maxMs/1000) + 's. The fund transaction may still be propagating — try again in a minute.');
+    err.activationTimeout = true;
+    throw err;
+}
+
 async function fetchCheckIDForSub(c, subAddress, primaryAddress) {
     // XRPL Checks live in the SENDER's (primary's) owned-objects directory,
     // not the destination's. Earlier versions of this helper queried the
     // sub-wallet, which is why the fallback never found anything and the
     // user saw "Could not extract CheckID from metadata or account_objects."
-    // We now query the primary and filter by Destination === subAddress.
+    // We now query the primary, paginate via marker (auditor patch #2), and
+    // filter by Destination === subAddress.
     var ATTEMPTS = 30;     // 30 * 2s = 60s ceiling
     var GAP_MS = 2000;
     for (var attempt = 0; attempt < ATTEMPTS; attempt++) {
         try {
-            var resp = await c.request({
-                command: 'account_objects',
-                account: primaryAddress,
-                type: 'check',
-                ledger_index: 'validated'
-            });
-            var objs = (resp.result && resp.result.account_objects) || [];
-            // Match: this account is the sender, sub is the destination.
-            // Walk newest-first (XRPL returns ordered by creation, latest at end).
-            var matches = [];
-            for (var i = 0; i < objs.length; i++) {
-                var o = objs[i];
-                if (o.LedgerEntryType === 'Check' &&
-                    o.Account === primaryAddress &&
-                    o.Destination === subAddress) {
-                    matches.push(o);
+            var marker = undefined;
+            do {
+                var req = {
+                    command: 'account_objects',
+                    account: primaryAddress,
+                    type: 'check',
+                    ledger_index: 'validated',
+                    limit: 200
+                };
+                if (marker) req.marker = marker;
+                var resp = await c.request(req);
+                var objs = (resp.result && resp.result.account_objects) || [];
+                var matches = [];
+                for (var i = 0; i < objs.length; i++) {
+                    var o = objs[i];
+                    if (o.LedgerEntryType === 'Check' &&
+                        o.Account === primaryAddress &&
+                        o.Destination === subAddress) {
+                        matches.push(o);
+                    }
                 }
-            }
-            if (matches.length > 0) {
-                // If multiple Checks to this sub exist (shouldn't, since sub is
-                // freshly generated per escrow), pick the highest Sequence.
-                matches.sort(function(a, b) { return (b.Sequence || 0) - (a.Sequence || 0); });
-                if (attempt > 0) lg('Check found via account_objects after ' + ((attempt + 1) * GAP_MS / 1000) + 's.', 'succ');
-                return matches[0].index;
-            }
+                if (matches.length > 0) {
+                    // Highest Sequence wins (newest Check to this destination).
+                    matches.sort(function(a, b) { return (b.Sequence || 0) - (a.Sequence || 0); });
+                    if (attempt > 0) lg('Check found via account_objects after ' + ((attempt + 1) * GAP_MS / 1000) + 's.', 'succ');
+                    return matches[0].index;
+                }
+                marker = resp.result && resp.result.marker;
+            } while (marker);
         } catch(e) {
-            // Network blip or actNotFound on the primary (extremely rare here);
-            // keep retrying — the Check propagates within a few ledgers.
+            // Network blip or rate-limit; keep retrying — Check propagates within a few ledgers.
         }
-        // Surface progress every ~10s
         if (attempt > 0 && attempt % 5 === 0) {
             showLoad('LOOKING FOR CHECK ON LEDGER... (' + (attempt * GAP_MS / 1000) + 's)');
         }
