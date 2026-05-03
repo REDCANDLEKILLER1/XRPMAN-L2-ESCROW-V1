@@ -422,7 +422,7 @@
             </button>
             <div id="splash-other-way" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid #1a1a1a">
                 <div style="font-size:10px;color:#00aa00;letter-spacing:1px;margin-bottom:6px;font-family:'Orbitron',monospace">ENTER SEED OR PHRASE</div>
-                <input id="splash-seed" type="password" placeholder="sXXX... or 12/24 words" style="width:100%;background:#000;border:1px solid #1a1a1a;color:var(--neon);padding:9px;font-family:'Share Tech Mono',monospace;font-size:12px;outline:none">
+                <input id="splash-seed" type="password" placeholder="sXXX... or 12/24 words" style="width:100%;background:#000;border:1px solid #1a1a1a;color:var(--neon);padding:9px;font-family:'Share Tech Mono',monospace;font-size:12px;outline:none" autocapitalize="off" autocorrect="off" spellcheck="false">
                 <div style="display:flex;gap:6px;margin-top:6px">
                     <button class="splash-btn-alt" onclick="splashLoginSeed()" style="flex:2">CONNECT</button>
                     <button class="splash-btn-alt" onclick="document.getElementById('splash-json').click()" style="flex:1">LOAD JSON</button>
@@ -690,7 +690,7 @@
             <div id="testStatus" style="font-size:.72em;color:#555;margin-top:6px"></div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <input id="w_seed" type="password" placeholder="ENTER SEED (sXXX...) OR MNEMONIC" style="flex:1;min-width:200px">
+            <input id="w_seed" type="password" placeholder="ENTER SEED (sXXX...) OR MNEMONIC" style="flex:1;min-width:200px" autocapitalize="off" autocorrect="off" spellcheck="false">
             <button id="authBtn" onclick="authWallet()" style="width:150px;flex-shrink:0;border-color:#ffcc00;color:#ffcc00">CONNECT</button>
         </div>
         <div style="display:flex;gap:6px;margin-top:4px">
@@ -720,6 +720,9 @@
     <!-- [02] ESCROW CONFIG -->
     <div class="panel full" data-tab="create" style="border-color:#00aa00">
         <h2>[02] CREATE TOKEN ESCROW <span class="tag tag-c">SUB-WALLET VAULT</span></h2>
+
+        <!-- Pending escrows banner — only renders when there are pending records -->
+        <div id="pending_banner" class="hidden" style="background:#1a1000;border:1px solid #aa6600;padding:8px;margin-bottom:8px;font-size:.72em;color:#ffaa44;line-height:1.55"></div>
 
         <!-- [10] Reserve explainer -->
         <div class="reserve-note">
@@ -753,22 +756,22 @@
                 <!-- [7] User password with confirm -->
                 <label>USER PASSWORD (FOR CLAIM)</label>
                 <div class="pw-wrap">
-                    <input id="e_user_pw" type="password" placeholder="Set a password (min 8 chars)">
+                    <input id="e_user_pw" type="password" placeholder="Set a password (min 8 chars)" autocapitalize="off" autocorrect="off" spellcheck="false">
                     <button class="pw-toggle" type="button" onclick="togglePw('e_user_pw',this)">SHOW</button>
                 </div>
                 <div class="pw-wrap">
-                    <input id="e_user_pw2" type="password" placeholder="Confirm user password">
+                    <input id="e_user_pw2" type="password" placeholder="Confirm user password" autocapitalize="off" autocorrect="off" spellcheck="false">
                     <button class="pw-toggle" type="button" onclick="togglePw('e_user_pw2',this)">SHOW</button>
                 </div>
 
                 <!-- [7] Admin password with confirm -->
                 <label>ADMIN PASSWORD</label>
                 <div class="pw-wrap">
-                    <input id="e_admin_pw" type="password" placeholder="Admin password (min 8 chars)">
+                    <input id="e_admin_pw" type="password" placeholder="Admin password (min 8 chars)" autocapitalize="off" autocorrect="off" spellcheck="false">
                     <button class="pw-toggle" type="button" onclick="togglePw('e_admin_pw',this)">SHOW</button>
                 </div>
                 <div class="pw-wrap">
-                    <input id="e_admin_pw2" type="password" placeholder="Confirm admin password">
+                    <input id="e_admin_pw2" type="password" placeholder="Confirm admin password" autocapitalize="off" autocorrect="off" spellcheck="false">
                     <button class="pw-toggle" type="button" onclick="togglePw('e_admin_pw2',this)">SHOW</button>
                 </div>
                 <!-- [7] Password warning -->
@@ -817,12 +820,12 @@
         <select id="c_select" onchange="updateClaimBtn()"><option value="">-- Select --</option></select>
         <label>USER PASSWORD</label>
         <div class="pw-wrap">
-            <input id="c_user_pw" type="password" placeholder="Password set during creation">
+            <input id="c_user_pw" type="password" placeholder="Password set during creation" autocapitalize="off" autocorrect="off" spellcheck="false">
             <button class="pw-toggle" type="button" onclick="togglePw('c_user_pw',this)">SHOW</button>
         </div>
         <label>ADMIN PASSWORD</label>
         <div class="pw-wrap">
-            <input id="c_admin_pw" type="password" placeholder="Admin password">
+            <input id="c_admin_pw" type="password" placeholder="Admin password" autocapitalize="off" autocorrect="off" spellcheck="false">
             <button class="pw-toggle" type="button" onclick="togglePw('c_admin_pw',this)">SHOW</button>
         </div>
         <button id="claimBtn" disabled onclick="claimEscrowConfirm()">SELECT AN ESCROW</button>
@@ -849,14 +852,14 @@
             <div style="flex:1">
                 <label>USER PASSWORD</label>
                 <div class="pw-wrap">
-                    <input id="wd_upw" type="password" placeholder="User password">
+                    <input id="wd_upw" type="password" placeholder="User password" autocapitalize="off" autocorrect="off" spellcheck="false">
                     <button class="pw-toggle" type="button" onclick="togglePw('wd_upw',this)">SHOW</button>
                 </div>
             </div>
             <div style="flex:1">
                 <label>ADMIN PASSWORD</label>
                 <div class="pw-wrap">
-                    <input id="wd_apw" type="password" placeholder="Admin password">
+                    <input id="wd_apw" type="password" placeholder="Admin password" autocapitalize="off" autocorrect="off" spellcheck="false">
                     <button class="pw-toggle" type="button" onclick="togglePw('wd_apw',this)">SHOW</button>
                 </div>
             </div>
@@ -880,7 +883,7 @@
 
                 <label>SUB-WALLET SEED (s...)</label>
                 <div class="pw-wrap">
-                    <input id="er_seed" type="password" placeholder="sEd..." spellcheck="false" autocomplete="off">
+                    <input id="er_seed" type="password" placeholder="sEd..." spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" inputmode="text">
                     <button class="pw-toggle" type="button" onclick="togglePw('er_seed',this)">SHOW</button>
                 </div>
 
@@ -1101,6 +1104,7 @@ window.addEventListener('load', function() {
             lg('System ready. Libraries loaded.', 'succ');
             renderDashboard();
             populateSelects(); populateWdSelect();
+            try { renderPendingBanner(); } catch(e) {}
             updateChecklistStatic();
             // Show stored escrow count
             var stored = getEscrows();
@@ -1777,6 +1781,7 @@ async function submitAsPrimary(c, txjson, label, opts) {
     if (!result.signed || !result.txid) throw new Error(label + ' did not produce a signed tx.');
 
     lg('Xaman signed: ' + result.txid.slice(0, 16) + '... validating on ledger.', 'succ');
+    if (result.dispatched)   lg('Xaman dispatch result: ' + result.dispatched, 'inf');
     if (result.dispatchedTo) lg('Xaman dispatched to: ' + result.dispatchedTo, 'inf');
     showLoad('VALIDATING ON LEDGER...');
 
@@ -1832,11 +1837,6 @@ async function submitAsPrimary(c, txjson, label, opts) {
     var lastErr  = null;
     var dispatchOk = result.dispatched && /^tes/.test(result.dispatched);
 
-    if (dispatchOk) {
-        // Give rippled a beat to validate the dispatched tx
-        await new Promise(function(r){ setTimeout(r, 2000); });
-    }
-
     // Helper: did the destination get funded? Only meaningful for Payments
     // where the destination was previously unactivated. Xaman often submits
     // via a different node cluster than the one we're querying; the
@@ -1850,6 +1850,63 @@ async function submitAsPrimary(c, txjson, label, opts) {
             });
             return !!(info.result && info.result.account_data && info.result.account_data.Balance);
         } catch(e) { return false; }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    //  XAMAN tesSUCCESS PATH — TRUST IT
+    //
+    //  When Xaman reports dispatched_result=tesSUCCESS, the tx IS on the
+    //  ledger. Xaman has already seen the validation. There's no value
+    //  in re-polling our own node — that just adds latency and creates
+    //  false-negative timeouts when our node lags behind Xaman's cluster.
+    //
+    //  This matches seed-signing behavior of submitAndWait, which returns
+    //  as soon as the network confirms.
+    //
+    //  We do attempt a brief (15s) metadata fetch because some callers
+    //  (CheckCreate) need AffectedNodes to extract a LedgerIndex. If our
+    //  node doesn't have it yet, return synthetic success anyway — the
+    //  caller can fall back to account_objects if needed.
+    // ──────────────────────────────────────────────────────────────────
+    if (dispatchOk) {
+        lg(label + ' confirmed by Xaman (' + result.dispatched + '). Fetching metadata...', 'inf');
+        var metaDeadline = Date.now() + 15000; // 15s window for metadata
+        while (Date.now() < metaDeadline) {
+            await new Promise(function(r){ setTimeout(r, 2000); });
+            try {
+                var fetchResp;
+                try { fetchResp = await c.request({ command: 'tx', tx_hash: result.txid, binary: false }); }
+                catch(eFirst) { fetchResp = await c.request({ command: 'tx', transaction: result.txid, binary: false }); }
+                if (fetchResp.result && fetchResp.result.validated === true) {
+                    lg(label + ' metadata loaded.', 'succ');
+                    return { result: { meta: fetchResp.result.meta, hash: result.txid, tx_json: fetchResp.result } };
+                }
+            } catch(e) { /* keep trying */ }
+        }
+        // Xaman vouches for success even if our node hasn't caught up.
+        lg(label + ' validated by Xaman; proceeding without local metadata.', 'succ');
+        return {
+            result: {
+                meta: { TransactionResult: result.dispatched, delivered_amount: txjson.Amount, AffectedNodes: [] },
+                hash: result.txid,
+                tx_json: txjson,
+                _viaXamanDispatch: true
+            }
+        };
+    }
+
+    // IMMEDIATE PROBE: by the time Xaman's polling loop returns success,
+    // the tx is often already validated on the ledger. Skip the wait.
+    if (await destinationActivated()) {
+        lg(label + ' confirmed via destination probe (immediate).', 'succ');
+        return {
+            result: {
+                meta: { TransactionResult: 'tesSUCCESS', delivered_amount: txjson.Amount },
+                hash: result.txid,
+                tx_json: txjson,
+                _viaDestinationProbe: true
+            }
+        };
     }
 
     for (var i = 0; i < ATTEMPTS; i++) {
@@ -1877,32 +1934,32 @@ async function submitAsPrimary(c, txjson, label, opts) {
             }
         }
 
+        // ALWAYS probe destination — every cycle, regardless of dispatchOk.
+        // The probe is authoritative on its own: if the sub-wallet exists,
+        // the funding tx applied, no matter how it got there. Doing this
+        // every loop instead of every 5 means fastest-possible recovery.
+        if (await destinationActivated()) {
+            lg(label + ' confirmed via destination probe at ' + ((i+1) * GAP_MS / 1000) + 's (sub-wallet is active on ledger).', 'succ');
+            return {
+                result: {
+                    meta: { TransactionResult: 'tesSUCCESS', delivered_amount: txjson.Amount },
+                    hash: result.txid,
+                    tx_json: txjson,
+                    _viaDestinationProbe: true
+                }
+            };
+        }
+
         // Surface progress every ~10s so the user knows it's still working
         if (i > 0 && i % 5 === 0) {
             showLoad('VALIDATING ON LEDGER... (' + (i * GAP_MS / 1000) + 's)');
-            // PARALLEL FALLBACK: check if the destination got funded.
-            // This rescues the common Xaman case where the dispatched tx is
-            // already validated on another node but our `tx` query keeps
-            // returning txnNotFound due to propagation lag.
-            if (dispatchOk && await destinationActivated()) {
-                lg(label + ' confirmed via destination probe (Xaman dispatched, hash propagation pending).', 'succ');
-                return {
-                    result: {
-                        meta: { TransactionResult: 'tesSUCCESS', delivered_amount: txjson.Amount },
-                        hash: result.txid,
-                        tx_json: txjson,
-                        _viaDestinationProbe: true
-                    }
-                };
-            }
         }
 
         await new Promise(function(r){ setTimeout(r, GAP_MS); });
     }
 
-    // One final destination probe before giving up — covers the case where
-    // funding actually completed in the last few seconds of the window.
-    if (dispatchOk && await destinationActivated()) {
+    // One final destination probe before giving up.
+    if (await destinationActivated()) {
         lg(label + ' confirmed via destination probe at timeout.', 'succ');
         return {
             result: {
@@ -1935,8 +1992,12 @@ async function submitAsPrimary(c, txjson, label, opts) {
     } catch(e) { /* fall through to error */ }
 
     var bithompBase = (NET === 'main') ? 'https://bithomp.com' : 'https://test.bithomp.com';
-    throw new Error(label + ' was signed in Xaman but our node has not seen it validate after 2 min. ' +
+    var timeoutErr = new Error(label + ' was signed in Xaman but our node has not seen it validate after 2 min. ' +
                     'Tx may still succeed — check ' + bithompBase + '/explorer/' + result.txid + ' in a minute.');
+    timeoutErr.xamanTimeout = true;
+    timeoutErr.txid = result.txid;
+    timeoutErr.dispatched = result.dispatched || '';
+    throw timeoutErr;
 }
 
 async function refreshWallet(silent) {
@@ -2200,10 +2261,10 @@ function createEscrowConfirm() {
     if (parseFloat(amount) > parseFloat(token.balance)) return showErr('Amount exceeds balance (' + token.balance + ' available).');
     var unlockDate = getUnlockDate();
     if (!unlockDate || unlockDate <= new Date()) return showErr('Unlock date must be in the future.');
-    var userPw = document.getElementById('e_user_pw').value;
-    var userPw2 = document.getElementById('e_user_pw2').value;
-    var adminPw = document.getElementById('e_admin_pw').value;
-    var adminPw2 = document.getElementById('e_admin_pw2').value;
+    var userPw = document.getElementById('e_user_pw').value.trim();
+    var userPw2 = document.getElementById('e_user_pw2').value.trim();
+    var adminPw = document.getElementById('e_admin_pw').value.trim();
+    var adminPw2 = document.getElementById('e_admin_pw2').value.trim();
     if (!userPw || userPw.length < 8) return showErr('User password must be at least 8 characters.');
     if (!adminPw || adminPw.length < 8) return showErr('Admin password must be at least 8 characters.');
     // [7.3] Confirm password match check
@@ -2231,8 +2292,8 @@ async function createEscrow() {
     var token = getSelectedToken();
     if (!token) return showErr('Token no longer selected.');
     var amount = document.getElementById('e_amount').value;
-    var userPw = document.getElementById('e_user_pw').value;
-    var adminPw = document.getElementById('e_admin_pw').value;
+    var userPw = document.getElementById('e_user_pw').value.trim();
+    var adminPw = document.getElementById('e_admin_pw').value.trim();
     var unlockDate = getUnlockDate();
     var issuer = token.issuer;
     var currency = token.currencyHex;
@@ -2273,7 +2334,46 @@ async function createEscrow() {
             Amount: xrpl.xrpToDrops('1.5'),
             Memos: memoBundle.memos
         };
-        var fundRes = await submitAsPrimary(c, fundTx, 'Fund sub-wallet (1.5 XRP)', { verifyDestinationFunded: true });
+        var fundRes;
+        try {
+            fundRes = await submitAsPrimary(c, fundTx, 'Fund sub-wallet (1.5 XRP)', { verifyDestinationFunded: true });
+        } catch (fundErr) {
+            // If this was a Xaman submit-then-validate timeout, save resumable state.
+            // The fund Payment may still validate later — we don't lose the sub-wallet.
+            if (fundErr && fundErr.xamanTimeout) {
+                try {
+                    showLoad('SAVING PENDING STATE...');
+                    var pendingEnc = await encryptSeed(sub.seed, adminPw, userPw);
+                    var pendingRec = {
+                        id: 'pending_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+                        subAddress: sub.address,
+                        primaryAddress: wallet.address,
+                        issuer: issuer,
+                        currencyInput: curInput,
+                        currencyHex: currency,
+                        amount: amount.toString(),
+                        salt: toB64(pendingEnc.salt),
+                        iv:   toB64(pendingEnc.iv),
+                        ct:   toB64(pendingEnc.ct),
+                        argon2: ARGON2_PARAMS,
+                        unlockDateMs: unlockDate.getTime(),
+                        memos: memoBundle.memos,
+                        memoText: memoBundle.text,
+                        fundTxHash: fundErr.txid || '',
+                        dispatched: fundErr.dispatched || '',
+                        network: NET,
+                        createdAt: Date.now(),
+                        step: 'fund_pending'
+                    };
+                    savePending(pendingRec);
+                    lg('Pending escrow saved. Resume from [02] PENDING ESCROWS once fund tx validates.', 'inf');
+                    renderPendingBanner();
+                } catch(saveE) {
+                    lg('Could not save pending state: ' + saveE.message, 'err');
+                }
+            }
+            throw fundErr;
+        }
         if (fundRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Fund failed: ' + fundRes.result.meta.TransactionResult);
         // [9.1] Fund tx hash
         var fundHash = fundRes.result.hash || fundRes.result.tx_json && fundRes.result.tx_json.hash || '';
@@ -2304,7 +2404,12 @@ async function createEscrow() {
                 break;
             }
         }
-        if (!checkID) throw new Error('Could not extract CheckID from metadata.');
+        // Fallback: when Xaman returns synthetic success without metadata,
+        // we can find the Check via account_objects on the destination.
+        if (!checkID) {
+            checkID = await fetchCheckIDForSub(c, sub.address, wallet.address);
+        }
+        if (!checkID) throw new Error('Could not extract CheckID from metadata or account_objects.');
         lg('Check ID: ' + checkID.slice(0, 12) + '...', 'succ');
 
         // Step 3: Sub-wallet cashes the check
@@ -2427,6 +2532,274 @@ async function createEscrow() {
 // ============================================================
 // [03] DASHBOARD
 // ============================================================
+// ============================================================
+// PENDING ESCROW STATE — survives fund-tx timeouts so user can resume
+// ============================================================
+// When a Xaman fund Payment is signed but our node can't confirm it
+// within 2 min, we save the encrypted sub-wallet seed + all params
+// here. The user can come back later, enter their passwords, and
+// resume from step 2 (CheckCreate) once the fund tx is observable.
+var PENDING_KEY = 'xrpman_pending_escrows';
+
+function getPending() {
+    try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'); }
+    catch(e) { return []; }
+}
+
+function savePending(rec) {
+    var list = getPending();
+    list.push(rec);
+    localStorage.setItem(PENDING_KEY, JSON.stringify(list));
+}
+
+function removePending(id) {
+    var list = getPending().filter(function(p) { return p.id !== id; });
+    localStorage.setItem(PENDING_KEY, JSON.stringify(list));
+}
+
+// Render the pending-escrows banner inside [02]. Hidden if list is empty
+// or if all entries are on a different network than the user is currently on.
+function renderPendingBanner() {
+    var box = document.getElementById('pending_banner');
+    if (!box) return;
+    var pending = getPending().filter(function(p){ return !p.network || p.network === NET; });
+    if (!pending.length) {
+        box.classList.add('hidden');
+        box.innerHTML = '';
+        return;
+    }
+    var bithompBase = (NET === 'main') ? 'https://bithomp.com' : 'https://test.bithomp.com';
+    var html = '<div style="font-family:\'Orbitron\',monospace;letter-spacing:2px;color:#ff8844;margin-bottom:6px">&#9888; PENDING ESCROW' + (pending.length > 1 ? 'S (' + pending.length + ')' : '') + '</div>';
+    html += '<div style="color:#ddaa66;margin-bottom:8px">Fund Payment was signed in Xaman but our node didn\'t see it validate within 2 min. The sub-wallet may be funded — verify on Bithomp, then resume to lock your tokens.</div>';
+    pending.forEach(function(p) {
+        var unlockStr = new Date(p.unlockDateMs).toLocaleString();
+        html += '<div style="border:1px solid #553300;padding:6px;margin-bottom:6px;background:#0a0500">';
+        html += '<div><b>' + escapeHtml(p.amount) + ' ' + escapeHtml(p.currencyInput) + '</b> &rarr; vault <span class="inf">' + truncAddr(p.subAddress) + '</span></div>';
+        html += '<div style="color:#aa8866;font-size:.92em">Unlock: ' + escapeHtml(unlockStr) + ' &middot; Net: ' + escapeHtml((p.network||'?').toUpperCase()) + '</div>';
+        if (p.fundTxHash) {
+            html += '<div style="font-family:\'Share Tech Mono\',monospace;font-size:.85em;color:#886644;margin-top:2px"><a href="' + bithompBase + '/explorer/' + p.fundTxHash + '" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none">[Verify fund tx on Bithomp &#8599;]</a></div>';
+        }
+        html += '<div style="display:flex;gap:6px;margin-top:6px">';
+        html += '<button onclick="resumePending(\'' + p.id + '\')" style="flex:1;background:#003322;border-color:var(--neon);color:var(--neon);padding:5px;font-size:.95em">VERIFY &amp; RESUME</button>';
+        html += '<button onclick="discardPending(\'' + p.id + '\')" style="width:80px;background:#220000;border-color:#883333;color:#cc6666;padding:5px;font-size:.95em">DISCARD</button>';
+        html += '</div>';
+        html += '</div>';
+    });
+    box.innerHTML = html;
+    box.classList.remove('hidden');
+}
+
+// User clicked "VERIFY & RESUME" on a pending entry.
+// 1. Prompt for both passwords (re-uses existing claim password fields visually
+//    via a small custom prompt — same Argon2 params as encryption).
+// 2. Decrypt seed.
+// 3. Verify sub-wallet is activated on the ledger (account_info has Balance).
+// 4. If yes, run CheckCreate + CheckCash to finish the lock and write a real
+//    escrow record. Remove the pending record on success.
+async function resumePending(pendingId) {
+    var pending = getPending().find(function(p){ return p.id === pendingId; });
+    if (!pending) return showErr('Pending record not found.');
+    if (pending.network && pending.network !== NET) {
+        return showErr('This pending escrow is on ' + pending.network.toUpperCase() + '. Switch networks to resume.');
+    }
+    if (!wallet || !wallet.address) {
+        return showErr('Connect your primary wallet first.');
+    }
+    if (wallet.address !== pending.primaryAddress) {
+        return showErr('Connected wallet (' + truncAddr(wallet.address) + ') does not match the primary that started this escrow (' + truncAddr(pending.primaryAddress) + ').');
+    }
+
+    // Prompt for passwords inline
+    var bodyHtml =
+        '<div style="font-size:.78em;color:var(--cyan);margin-bottom:8px">Enter the passwords you used when starting this escrow.</div>' +
+        '<label>USER PASSWORD</label><input id="rp_upw" type="password" autocapitalize="off" autocorrect="off" style="margin-bottom:6px">' +
+        '<label>ADMIN PASSWORD</label><input id="rp_apw" type="password" autocapitalize="off" autocorrect="off">';
+
+    showConfirm('RESUME PENDING ESCROW', bodyHtml, 'VERIFY &amp; RESUME', function() {
+        var uPw = document.getElementById('rp_upw').value.trim();
+        var aPw = document.getElementById('rp_apw').value.trim();
+        if (!uPw || !aPw) return showErr('Both passwords required.');
+        runResumePending(pending, uPw, aPw);
+    });
+}
+
+async function runResumePending(pending, userPw, adminPw) {
+    showLoad('DECRYPTING SUB-WALLET...');
+    try {
+        var seed = await decryptSeed(pending, adminPw, userPw);
+        var sub = xrpl.Wallet.fromSeed(seed);
+        if (sub.address !== pending.subAddress) {
+            throw new Error('Decrypted seed does not match the recorded sub-wallet address. Wrong passwords?');
+        }
+        lg('Sub-wallet seed decrypted: ' + truncAddr(sub.address), 'succ');
+
+        showLoad('VERIFYING SUB-WALLET ACTIVATION...');
+        var c = await getClient();
+        var info;
+        try {
+            info = await c.request({ command: 'account_info', account: sub.address, ledger_index: 'validated' });
+        } catch (notFound) {
+            var msg = (notFound && (notFound.data && notFound.data.error || notFound.message)) || '';
+            if (/actNotFound|not.*found/i.test(msg)) {
+                throw new Error('Sub-wallet still not active on ' + NET.toUpperCase() + '. Fund tx may not have validated. Check Bithomp; if still not there, the tx never made it on-chain. Use DISCARD if you want to give up.');
+            }
+            throw notFound;
+        }
+        var bal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
+        lg('Sub-wallet active: ' + bal.toFixed(2) + ' XRP. Resuming from CheckCreate.', 'succ');
+
+        // Step 2: CheckCreate (same as the original flow, with the persisted memos)
+        showLoad('CREATING TOKEN CHECK...');
+        var checkTx = {
+            TransactionType: 'CheckCreate',
+            Account: wallet.address,
+            Destination: sub.address,
+            SendMax: { currency: pending.currencyHex, issuer: pending.issuer, value: pending.amount },
+            Memos: pending.memos
+        };
+        var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + pending.amount + ' ' + pending.currencyInput + ')');
+        if (checkRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('CheckCreate failed: ' + checkRes.result.meta.TransactionResult);
+        var checkHash = checkRes.result.hash || (checkRes.result.tx_json && checkRes.result.tx_json.hash) || '';
+        lg('Check created. TX: ' + (checkHash || 'N/A'), 'succ');
+
+        // Extract CheckID
+        var checkID = null;
+        var nodes = checkRes.result.meta.AffectedNodes || [];
+        for (var i = 0; i < nodes.length; i++) {
+            if (nodes[i].CreatedNode && nodes[i].CreatedNode.LedgerEntryType === 'Check') {
+                checkID = nodes[i].CreatedNode.LedgerIndex; break;
+            }
+        }
+        // Same Xaman-synthetic-success fallback as the main create flow
+        if (!checkID) {
+            checkID = await fetchCheckIDForSub(c, sub.address, wallet.address);
+        }
+        if (!checkID) throw new Error('Could not extract CheckID from CheckCreate metadata or account_objects.');
+        lg('Check ID: ' + checkID.slice(0, 12) + '...', 'succ');
+
+        // Step 3: Sub-wallet cashes the check
+        showLoad('CASHING CHECK (AUTO-TRUST)...');
+        var cashTx = await c.autofill({
+            TransactionType: 'CheckCash',
+            Account: sub.address,
+            CheckID: checkID,
+            Amount: { currency: pending.currencyHex, issuer: pending.issuer, value: pending.amount },
+            Fee: '12',
+            Memos: pending.memos
+        });
+        cashTx.LastLedgerSequence = cashTx.LastLedgerSequence + 50;
+        var cashRes = await c.submitAndWait(sub.sign(cashTx).tx_blob);
+        if (cashRes.result.meta.TransactionResult !== 'tesSUCCESS') {
+            if (cashRes.result.meta.TransactionResult === 'tecNO_LINE_INSUF_RESERVE') {
+                throw new Error('Sub-wallet needs more XRP for trust line reserve.');
+            }
+            throw new Error('CheckCash failed: ' + cashRes.result.meta.TransactionResult);
+        }
+        var cashHash = cashRes.result.hash || (cashRes.result.tx_json && cashRes.result.tx_json.hash) || '';
+        lg('Tokens secured. TX: ' + (cashHash || 'N/A'), 'succ');
+
+        // Step 4: Compute lock ledger time, save real escrow record
+        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
+        var currentLedgerTime = ledgerResp.result.ledger.close_time;
+        var lockSeconds = Math.floor((pending.unlockDateMs - Date.now()) / 1000);
+        var unlockLedgerTime = currentLedgerTime + lockSeconds;
+
+        var escrow = {
+            id: uuid(),
+            subAddress: pending.subAddress,
+            primaryAddress: pending.primaryAddress,
+            issuer: pending.issuer,
+            currencyInput: pending.currencyInput,
+            currencyHex: pending.currencyHex,
+            amount: pending.amount,
+            salt: pending.salt,        // re-use same encrypted-seed material
+            iv:   pending.iv,
+            ct:   pending.ct,
+            argon2: pending.argon2,
+            createdAt: pending.createdAt,
+            unlockDate: pending.unlockDateMs,
+            unlockLedgerTime: unlockLedgerTime,
+            status: 'locked',
+            network: pending.network || NET,
+            txHashes: { fund: pending.fundTxHash || '', checkCreate: checkHash, checkCash: cashHash },
+            resumed: true
+        };
+        var escrows = JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
+        escrows.push(escrow);
+        localStorage.setItem(STORE_KEY, JSON.stringify(escrows));
+
+        // Remove from pending list, refresh UI
+        removePending(pending.id);
+        lg('=== ESCROW LOCKED VIA RESUME. ID ' + escrow.id + ' ===', 'succ');
+        renderPendingBanner();
+        renderDashboard();
+        populateSelects(); populateWdSelect();
+
+        showReceipt('lock_receipt', 'ESCROW LOCKED (RESUMED)',
+            buildReceiptRow('TOKEN', pending.amount + ' ' + pending.currencyInput) +
+            buildReceiptRow('VAULT', pending.subAddress) +
+            buildReceiptRow('UNLOCK', new Date(pending.unlockDateMs).toLocaleString()) +
+            buildReceiptRow('STATUS', '<span class="succ">LOCKED</span>'),
+            '', '');
+    } catch (e) {
+        showErr(e.message);
+        lg('Resume failed: ' + e.message, 'err');
+    } finally {
+        hideLoad();
+    }
+}
+
+function discardPending(pendingId) {
+    var p = getPending().find(function(x){ return x.id === pendingId; });
+    if (!p) return;
+    var bodyHtml =
+        '<div style="font-size:.78em;color:#ffaa66;margin-bottom:8px">Discard this pending escrow record?</div>' +
+        confRow('VAULT', p.subAddress) +
+        confRow('AMOUNT', p.amount + ' ' + p.currencyInput) +
+        '<div class="conf-warn">' +
+        '&#9888; Tokens were never locked. If the fund Payment did succeed, your sub-wallet has 1.5 XRP — recover it via [05] EMERGENCY RECOVERY using the seed below before discarding.<br><br>' +
+        '<b>SUB-WALLET ADDRESS:</b><br><span style="font-family:\'Share Tech Mono\',monospace;color:var(--cyan);word-break:break-all">' + escapeHtml(p.subAddress) + '</span>' +
+        '</div>';
+    showConfirm('DISCARD PENDING ESCROW', bodyHtml, 'CONFIRM DISCARD', function() {
+        removePending(pendingId);
+        renderPendingBanner();
+        lg('Pending escrow ' + pendingId + ' discarded.', 'inf');
+    });
+}
+
+// ============================================================
+// CHECK-ID FALLBACK — when Xaman returns synthetic success without
+// AffectedNodes metadata, find the Check object via account_objects.
+// We look for a Check on the sub-wallet (Destination) sent by primary
+// (Account). Returns the LedgerIndex (CheckID) or null.
+// Retries briefly because the ledger may need a moment after Xaman's
+// confirmation for our node to see the new Check object.
+// ============================================================
+async function fetchCheckIDForSub(c, subAddress, primaryAddress) {
+    for (var attempt = 0; attempt < 8; attempt++) {  // up to 8 * 2s = 16s
+        try {
+            var resp = await c.request({
+                command: 'account_objects',
+                account: subAddress,
+                type: 'check',
+                ledger_index: 'validated'
+            });
+            var objs = (resp.result && resp.result.account_objects) || [];
+            // Most recent matching Check (Account = primary, Destination = sub)
+            for (var i = objs.length - 1; i >= 0; i--) {
+                var o = objs[i];
+                if (o.LedgerEntryType === 'Check' && o.Account === primaryAddress && o.Destination === subAddress) {
+                    return o.index;
+                }
+            }
+        } catch(e) {
+            // actNotFound is expected if sub-wallet metadata hasn't propagated yet
+        }
+        await new Promise(function(r){ setTimeout(r, 2000); });
+    }
+    return null;
+}
+
 function getEscrows() {
     return JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
 }
@@ -2733,8 +3106,8 @@ function refreshDashboard() {
 // [1.2] Show confirmation before claiming
 function claimEscrowConfirm() {
     var escrowId = document.getElementById('c_select').value;
-    var userPw = document.getElementById('c_user_pw').value;
-    var adminPw = document.getElementById('c_admin_pw').value;
+    var userPw = document.getElementById('c_user_pw').value.trim();
+    var adminPw = document.getElementById('c_admin_pw').value.trim();
 
     // [13.2] Blocking checks
     if (!escrowId) return showErr('Select an escrow first.');
@@ -2773,8 +3146,8 @@ function claimEscrowConfirm() {
 
 async function claimEscrow() {
     var escrowId = document.getElementById('c_select').value;
-    var userPw = document.getElementById('c_user_pw').value;
-    var adminPw = document.getElementById('c_admin_pw').value;
+    var userPw = document.getElementById('c_user_pw').value.trim();
+    var adminPw = document.getElementById('c_admin_pw').value.trim();
     if (!escrowId) return showErr('Select an escrow first.');
     if (!userPw || !adminPw) return showErr('Both passwords are required to claim.');
     if (!wallet) return showErr('Connect primary wallet first.');
@@ -3158,8 +3531,8 @@ function onWdSelect() {
 
 async function wdManualDelete() {
     var id = document.getElementById('wd_select').value;
-    var uPw = document.getElementById('wd_upw').value;
-    var aPw = document.getElementById('wd_apw').value;
+    var uPw = document.getElementById('wd_upw').value.trim();
+    var aPw = document.getElementById('wd_apw').value.trim();
     if (!id) return showErr('Select a vault first.');
     if (!uPw || !aPw) return showErr('Both passwords required.');
     if (!wallet) return showErr('Connect primary wallet first.');
@@ -3212,6 +3585,21 @@ async function wdManualDelete() {
     }
 }
 
+// Tiny html-escape for memo content + any user-provided strings rendered into innerHTML
+function escapeHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() {
+            lg('Copied: ' + String(text).slice(0, 16) + '...', 'inf');
+        }).catch(function() {});
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 //   [05] EMERGENCY RECOVERY — manual delete by seed (orphaned vaults)
 // ════════════════════════════════════════════════════════════════════
@@ -3235,6 +3623,8 @@ function toggleEmergencyRecovery() {
 
 // Live-derive the address from the seed as the user types/pastes,
 // so they can verify it matches what they expect before submitting.
+// Also surfaces specific common typos (autocap, non-base58) instead of
+// the generic xrpl.js "Invalid seed format" error.
 function attachEmergencySeedListener() {
     var seedEl = document.getElementById('er_seed');
     if (!seedEl || seedEl._xrpmanWired) return;
@@ -3243,11 +3633,38 @@ function attachEmergencySeedListener() {
         var derived = document.getElementById('er_derived');
         var v = seedEl.value.trim();
         if (!v) { derived.textContent = ''; return; }
+
+        // Mnemonic path (space-separated words) — let xrpl.js handle it
+        if (v.includes(' ')) {
+            try {
+                var wm = xrpl.Wallet.fromMnemonic(v);
+                derived.innerHTML = 'Derived address: <span class="succ">' + wm.address + '</span>';
+            } catch(e) {
+                derived.innerHTML = '<span style="color:#ff6666">Invalid mnemonic phrase.</span>';
+            }
+            return;
+        }
+
+        // Family seed path — flag common typos before xrpl.js sees it
+        if (v[0] !== 's') {
+            if (v[0] === 'S') {
+                derived.innerHTML = '<span style="color:#ff8844">First letter must be lowercase <b>s</b> (your keyboard may have auto-capitalized it).</span>';
+            } else {
+                derived.innerHTML = '<span style="color:#ff6666">Family seeds must start with lowercase <b>s</b>.</span>';
+            }
+            return;
+        }
+        // Base58 alphabet (Ripple variant): no 0, O, I, l
+        var nonB58 = v.match(/[^rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz]/);
+        if (nonB58) {
+            derived.innerHTML = '<span style="color:#ff6666">Invalid character "<b>' + escapeHtml(nonB58[0]) + '</b>" in seed (not base58). Common slip: <b>&amp;</b> instead of <b>8</b>, <b>0</b> instead of <b>O</b>.</span>';
+            return;
+        }
         try {
-            var w = v.includes(' ') ? xrpl.Wallet.fromMnemonic(v) : xrpl.Wallet.fromSeed(v);
+            var w = xrpl.Wallet.fromSeed(v);
             derived.innerHTML = 'Derived address: <span class="succ">' + w.address + '</span>';
         } catch(e) {
-            derived.innerHTML = '<span style="color:#ff6666">Invalid seed format.</span>';
+            derived.innerHTML = '<span style="color:#ff6666">Seed is base58 but the checksum failed — double-check for transposed characters.</span>';
         }
     });
 }
@@ -4906,6 +5323,10 @@ function setMainTab(tab) {
     // Auto-populate explorer wallet list when entering that tab
     if (tab === 'explorer') {
         try { populateExplorerSelector(); } catch(e) {}
+    }
+    // Refresh pending-escrow banner when entering create
+    if (tab === 'create') {
+        try { renderPendingBanner(); } catch(e) {}
     }
     if (window._xrpmanReact) window._xrpmanReact('main-tab-' + tab);
 }
