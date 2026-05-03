@@ -2355,6 +2355,25 @@ function getUnlockDate() {
     var cv = document.getElementById('e_custom_date').value;
     return cv ? new Date(cv) : null;
 }
+
+// Smart human-readable duration for the preview row and the
+// "lock not expired yet" claim error. Replaces the old
+// Math.ceil(ms/86400000) + ' days' that returned "1 days" for any
+// remaining time under 24 hours, including times in the past.
+function formatLockDuration(ms) {
+    if (ms <= 0) return null;  // caller decides how to render past/now
+    var totalSec = Math.floor(ms / 1000);
+    var days  = Math.floor(totalSec / 86400);
+    var hours = Math.floor((totalSec % 86400) / 3600);
+    var mins  = Math.floor((totalSec % 3600) / 60);
+    function pl(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+    if (days >= 7 || (days >= 1 && hours === 0)) return pl(days, 'day');
+    if (days >= 1)  return pl(days, 'day') + ', ' + pl(hours, 'hour');
+    if (hours >= 1) return mins === 0 ? pl(hours, 'hour') : pl(hours, 'hour') + ', ' + pl(mins, 'minute');
+    if (mins >= 1)  return pl(mins, 'minute');
+    return 'less than 1 minute';
+}
+
 function updatePreview() {
     var unlock = getUnlockDate();
     var pre = document.getElementById('e_preview');
@@ -2363,7 +2382,24 @@ function updatePreview() {
     var token = getSelectedToken();
     var name = token ? token.name : '?';
     pre.style.display = 'block';
-    pre.innerHTML = 'PREVIEW: Lock <span class="inf">' + amt + ' ' + name + '</span> until <span class="inf">' + unlock.toLocaleString() + '</span> (' + Math.ceil((unlock - Date.now()) / 86400000) + ' days)';
+
+    var msRemaining = unlock.getTime() - Date.now();
+    var durStr = formatLockDuration(msRemaining);
+
+    if (msRemaining <= 0) {
+        // Past date — block and warn instead of silently saying "0 days"
+        pre.innerHTML = '<span class="warn">&#9888; UNLOCK DATE IS IN THE PAST</span> &mdash; adjust the date before locking. ' +
+                        'Selected: <span class="inf">' + unlock.toLocaleString() + '</span>';
+    } else if (msRemaining < 5 * 60 * 1000) {
+        // Sub-5-minute locks are almost certainly user error (off-by-AM/PM, wrong day, etc.)
+        pre.innerHTML = '<span class="warn">&#9888; VERY SHORT LOCK</span> &mdash; ' +
+                        amt + ' ' + name + ' will unlock in <span class="warn">' + durStr + '</span> ' +
+                        '(' + unlock.toLocaleString() + '). Confirm this is intentional.';
+    } else {
+        pre.innerHTML = 'PREVIEW: Lock <span class="inf">' + amt + ' ' + name + '</span> ' +
+                        'until <span class="inf">' + unlock.toLocaleString() + '</span> ' +
+                        '(<span class="inf">' + durStr + '</span> from now)';
+    }
 }
 document.addEventListener('input', function(e) {
     if (['e_amount', 'e_custom_date', 'e_token_select'].includes(e.target.id)) updatePreview();
@@ -3595,8 +3631,9 @@ async function claimEscrow() {
         var currentLedgerTime = ledgerResp.result.ledger.close_time;
         // [13.2] Ledger time lock check
         if (currentLedgerTime < escrow.unlockLedgerTime) {
+            var remainingMs = (escrow.unlockLedgerTime - currentLedgerTime) * 1000;
             throw new Error('Lock period has NOT expired (verified via ledger time). Remaining: ~' +
-                Math.ceil((escrow.unlockLedgerTime - currentLedgerTime) / 86400) + ' days.');
+                (formatLockDuration(remainingMs) || 'less than 1 minute') + '.');
         }
 
         showLoad('DECRYPTING VAULT (ARGON2ID)...');
