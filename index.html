@@ -1599,7 +1599,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
 
         var acctInfo;
         try {
-            acctInfo = await c.request({ command: 'account_info', account: sub.address, ledger_index: 'validated' });
+            acctInfo = await requestWithRetry(
+                { command: 'account_info', account: sub.address, ledger_index: 'validated' },
+                { attempts: 5, timeout: 8000, label: 'delete-probe ' + sub.address.slice(0,8) }
+            );
         } catch(gone) {
             if (gone.message && (gone.message.includes('actNotFound') || gone.message.includes('Account not found'))) {
                 // Already gone — mark deleted
@@ -1612,7 +1615,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
         var ownerCount = acctInfo.result.account_data.OwnerCount || 0;
         var bal = parseFloat(xrpl.dropsToXrp(acctInfo.result.account_data.Balance));
         var acctSeq = acctInfo.result.account_data.Sequence;
-        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
+        var ledgerResp = await requestWithRetry(
+            { command: 'ledger', ledger_index: 'validated' },
+            { attempts: 5, timeout: 8000, label: 'delete-ledger' }
+        );
         var currentLedger = ledgerResp.result.ledger_index;
         var gap = currentLedger - acctSeq;
 
@@ -1624,11 +1630,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
         var BLOCKING_TYPES = { Check: 1, Escrow: 1, NFTokenPage: 1, PayChannel: 1, RippleState: 1 };
         var blockers = [];
         try {
-            var objsResp = await c.request({
-                command: 'account_objects',
-                account: sub.address,
-                ledger_index: 'validated'
-            });
+            var objsResp = await requestWithRetry(
+                { command: 'account_objects', account: sub.address, ledger_index: 'validated' },
+                { attempts: 3, timeout: 8000, label: 'delete-objects ' + sub.address.slice(0,8) }
+            );
             var allObjs = (objsResp.result && objsResp.result.account_objects) || [];
             for (var bi = 0; bi < allObjs.length; bi++) {
                 if (BLOCKING_TYPES[allObjs[bi].LedgerEntryType]) blockers.push(allObjs[bi]);
@@ -1689,7 +1694,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
             for (var p = 0; p < 20; p++) {
                 await new Promise(function(r) { setTimeout(r, 3000); });
                 try {
-                    await c.request({ command: 'account_info', account: sub.address, ledger_index: 'validated' });
+                    await requestWithRetry(
+                        { command: 'account_info', account: sub.address, ledger_index: 'validated' },
+                        { attempts: 1, timeout: 6000, label: 'delete-poll ' + sub.address.slice(0,8) }
+                    );
                 } catch(gone) {
                     if (gone.message && (gone.message.includes('actNotFound') || gone.message.includes('Account not found'))) {
                         lg('WALLET DELETED! ' + bal.toFixed(2) + ' XRP returned (minus 0.2 burn).', 'succ');
@@ -1755,10 +1763,15 @@ function startAutoDeleteHelper(sub, destAddress, escrowId) {
             } else if (result === 'too_soon') {
                 // Still waiting — check gap for progress display
                 try {
-                    var c = await getClient();
-                    var info = await c.request({ command: 'account_info', account: autoDeleteSub.address, ledger_index: 'validated' });
+                    var info = await requestWithRetry(
+                        { command: 'account_info', account: autoDeleteSub.address, ledger_index: 'validated' },
+                        { attempts: 2, timeout: 6000, label: 'auto-delete progress' }
+                    );
                     var seq = info.result.account_data.Sequence;
-                    var lr = await c.request({ command: 'ledger', ledger_index: 'validated' });
+                    var lr = await requestWithRetry(
+                        { command: 'ledger', ledger_index: 'validated' },
+                        { attempts: 2, timeout: 6000, label: 'auto-delete ledger' }
+                    );
                     var gap = lr.result.ledger_index - seq;
                     lg('  Gap: ' + gap + '/256 — ~' + Math.ceil((256 - gap) * 3.5 / 60) + ' min remaining', '');
                 } catch(x) {}
@@ -2203,8 +2216,17 @@ async function submitAsPrimary(c, txjson, label, opts) {
 
 async function refreshWallet(silent) {
     if (!wallet) return;
-    var c = await getClient();
-    var info = await c.request({ command: 'account_info', account: wallet.address, ledger_index: 'validated' });
+    var info;
+    try {
+        info = await requestWithRetry(
+            { command: 'account_info', account: wallet.address, ledger_index: 'validated' },
+            { attempts: 5, timeout: 8000, label: 'refresh ' + wallet.address.slice(0,8) }
+        );
+    } catch (e) {
+        document.getElementById('w_info').innerHTML = '<span class="warn">OFFLINE: ' + truncAddr(wallet.address) + ' — RPC unavailable</span>';
+        if (!silent) lg('Wallet refresh failed: ' + (e.message || e) + '. Showing cached state.', 'err');
+        return;
+    }
     walletBal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
     var ownerCount = info.result.account_data.OwnerCount || 0;
 
@@ -2225,7 +2247,10 @@ async function refreshWallet(silent) {
     walletTokens = [];
     var tokensHtml = '';
     try {
-        var lines = await c.request({ command: 'account_lines', account: wallet.address, ledger_index: 'validated' });
+        var lines = await requestWithRetry(
+            { command: 'account_lines', account: wallet.address, ledger_index: 'validated' },
+            { attempts: 5, timeout: 8000, label: 'account_lines ' + wallet.address.slice(0,8) }
+        );
         var allLines = lines.result.lines || [];
         if (!silent) lg('Found ' + allLines.length + ' trust line(s)', 'inf');
 
@@ -2289,11 +2314,13 @@ async function auditVaultStatus() {
     lg('Auditing ' + needCheck.length + ' vault(s) against ledger...', 'inf');
     var updated = 0;
     try {
-        var c = await getClient();
         for (var i = 0; i < needCheck.length; i++) {
             var e = needCheck[i];
             try {
-                await c.request({ command: 'account_info', account: e.subAddress, ledger_index: 'validated' });
+                await requestWithRetry(
+                    { command: 'account_info', account: e.subAddress, ledger_index: 'validated' },
+                    { attempts: 3, timeout: 8000, label: 'audit ' + e.subAddress.slice(0,8) }
+                );
                 // Account exists — leave status as-is
             } catch(err) {
                 if (err.message && (err.message.includes('actNotFound') || err.message.includes('Account not found'))) {
@@ -3778,7 +3805,10 @@ async function claimEscrow() {
     try {
         var c = await getClient();
 
-        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
+        var ledgerResp = await requestWithRetry(
+            { command: 'ledger', ledger_index: 'validated' },
+            { attempts: 5, timeout: 8000, label: 'claim ledger time' }
+        );
         var currentLedgerTime = ledgerResp.result.ledger.close_time;
         // [13.2] Ledger time lock check
         if (currentLedgerTime < escrow.unlockLedgerTime) {
@@ -3802,7 +3832,10 @@ async function claimEscrow() {
 
         // Sweep tokens back to primary
         showLoad('SWEEPING TOKENS...');
-        var lines = await c.request({ command: 'account_lines', account: sub.address, ledger_index: 'validated' });
+        var lines = await requestWithRetry(
+            { command: 'account_lines', account: sub.address, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'claim trustlines ' + sub.address.slice(0,8) }
+        );
         var trustCleanupFailed = false;
         var tokenNameSwept = hexToCurrency(escrow.currencyHex);
         var totalSwept = 0;
@@ -3965,8 +3998,10 @@ async function showVaultDetail(escrowId) {
     body.innerHTML = html;
 
     try {
-        var c = await getClient();
-        var info = await c.request({ command: 'account_info', account: e.subAddress, ledger_index: 'validated' });
+        var info = await requestWithRetry(
+            { command: 'account_info', account: e.subAddress, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'detail ' + e.subAddress.slice(0,8) }
+        );
         var bal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
         var ownerCount = info.result.account_data.OwnerCount || 0;
 
@@ -3974,7 +4009,10 @@ async function showVaultDetail(escrowId) {
         liveHtml += '<div style="color:var(--txt)">Reserve locked: ' + (1 + ownerCount * 0.2).toFixed(1) + ' XRP (' + ownerCount + ' objects)</div>';
 
         try {
-            var tlines = await c.request({ command: 'account_lines', account: e.subAddress, ledger_index: 'validated' });
+            var tlines = await requestWithRetry(
+                { command: 'account_lines', account: e.subAddress, ledger_index: 'validated' },
+                { attempts: 3, timeout: 8000, label: 'detail-lines ' + e.subAddress.slice(0,8) }
+            );
             var toks = tlines.result.lines || [];
             if (toks.length > 0) {
                 liveHtml += '<div style="margin-top:6px;color:#00aa00">TOKENS IN VAULT:</div>';
@@ -4070,8 +4108,10 @@ async function detailCheckBalance() {
     liveEl.innerHTML = '<span style="color:#555">Querying ledger...</span>';
 
     try {
-        var c = await getClient();
-        var info = await c.request({ command: 'account_info', account: detailEscrow.subAddress, ledger_index: 'validated' });
+        var info = await requestWithRetry(
+            { command: 'account_info', account: detailEscrow.subAddress, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'check-bal ' + detailEscrow.subAddress.slice(0,8) }
+        );
         var bal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
         var ownerCount = info.result.account_data.OwnerCount || 0;
 
@@ -4079,7 +4119,10 @@ async function detailCheckBalance() {
         html += '<div style="color:var(--txt)">Objects: ' + ownerCount + '</div>';
 
         try {
-            var lines = await c.request({ command: 'account_lines', account: detailEscrow.subAddress, ledger_index: 'validated' });
+            var lines = await requestWithRetry(
+                { command: 'account_lines', account: detailEscrow.subAddress, ledger_index: 'validated' },
+                { attempts: 3, timeout: 8000, label: 'check-bal-lines ' + detailEscrow.subAddress.slice(0,8) }
+            );
             var toks = lines.result.lines || [];
             for (var i = 0; i < toks.length; i++) {
                 var tbal = parseFloat(toks[i].balance);
