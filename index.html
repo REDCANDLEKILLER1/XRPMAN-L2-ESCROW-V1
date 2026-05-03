@@ -1697,9 +1697,16 @@ async function authWallet() {
 // Works for BOTH seed/JSON users (signs locally) AND Xaman users
 // (prompts via overlay, polls proxy, then polls ledger for validation).
 // Returns the same shape as xrpl's submitAndWait: { result: { meta, hash, tx_json } }
+//
+// opts (optional):
+//   verifyDestinationFunded: true  - if Xaman dispatch succeeds but our node
+//     can't find the tx hash, also check whether the Destination account is
+//     now activated. This rescues Payment txs in the common case where Xaman
+//     submits to a different cluster than the user's selected node.
 // ════════════════════════════════════════════════════════════════════
-async function submitAsPrimary(c, txjson, label) {
+async function submitAsPrimary(c, txjson, label, opts) {
     label = label || 'transaction';
+    opts = opts || {};
 
     // Seed path — user has a full xrpl.Wallet with .seed and .sign()
     if (wallet && wallet.seed && !wallet.readOnly) {
@@ -1740,21 +1747,166 @@ async function submitAsPrimary(c, txjson, label) {
     if (!result.signed || !result.txid) throw new Error(label + ' did not produce a signed tx.');
 
     lg('Xaman signed: ' + result.txid.slice(0, 16) + '... validating on ledger.', 'succ');
+    if (result.dispatchedTo) lg('Xaman dispatched to: ' + result.dispatchedTo, 'inf');
     showLoad('VALIDATING ON LEDGER...');
 
-    // Poll the ledger for the tx to be validated, then return the full record
-    for (var i = 0; i < 30; i++) {
-        await new Promise(function(r) { setTimeout(r, 2000); });
-        try {
-            var resp = await c.request({ command: 'tx', transaction: result.txid });
-            if (resp.result && resp.result.validated) {
-                return { result: { meta: resp.result.meta, hash: result.txid, tx_json: resp.result } };
+    // ──────────────────────────────────────────────────────────────────
+    //  Xaman dispatch handling — what state is the tx in right now?
+    //
+    //   A) result.dispatched = 'tesSUCCESS'       → Xaman submitted, tx will validate shortly. Poll.
+    //   B) result.dispatched = 'tec...'/'tef...'  → Xaman submitted, tx FAILED on chain. Surface immediately.
+    //   C) result.dispatched = '' (empty)         → Xaman did NOT submit. WE submit the hex blob ourselves.
+    //
+    //  Case C is the cause of the "stuck on validating" hang: if Xaman
+    //  doesn't auto-submit (proxy quirk, user setting, etc.) the tx never
+    //  hits the ledger and the poll just times out at 90s.
+    // ──────────────────────────────────────────────────────────────────
+
+    var disp = (result.dispatched || '').trim();
+    if (disp && /^te[cf]/i.test(disp)) {
+        throw new Error(label + ' failed on ledger: ' + disp);
+    }
+    if (!disp) {
+        // Case C: Xaman didn't dispatch. Submit the signed blob ourselves.
+        if (result.hex) {
+            try {
+                lg('Xaman did not auto-submit — sending signed blob to ledger directly.', 'inf');
+                showLoad('SUBMITTING SIGNED TX...');
+                var submitRes = await c.submitAndWait(result.hex);
+                lg(label + ' validated via direct submit.', 'succ');
+                return submitRes;
+            } catch (e) {
+                // Most common: tefALREADY / tefPAST_SEQ → Xaman did submit after all,
+                // fall through to the hash-based polling path below.
+                var emsg = (e && (e.message || e.data && e.data.error)) || '';
+                if (/tefALREADY|tefPAST_SEQ|tefMAX_LEDGER/i.test(emsg)) {
+                    lg('Direct submit says tx already on ledger — falling back to hash lookup.', 'inf');
+                } else {
+                    lg('Direct submit failed: ' + emsg + ' — falling back to hash lookup.', 'inf');
+                }
             }
-        } catch(e) {
-            // Not in ledger yet — keep polling
+        } else {
+            lg('No signed hex available; relying on Xaman dispatch.', 'inf');
         }
     }
-    throw new Error(label + ' signed but not validated within 60s. Check Xaman for status.');
+
+    // Poll the ledger for tx validation. Strategy:
+    //  1) If Xaman already reported tesSUCCESS via dispatched_result, give the
+    //     ledger a couple seconds to propagate, then fetch the validated record.
+    //  2) Otherwise (or if dispatched failed), poll up to ~90s.
+    //  3) If `tx` keeps returning txnNotFound but Xaman dispatched it,
+    //     fall back to scanning the user's account_tx for the matching hash.
+
+    var ATTEMPTS = 60;          // 60 * 2s = 120s ceiling
+    var GAP_MS   = 2000;
+    var lastErr  = null;
+    var dispatchOk = result.dispatched && /^tes/.test(result.dispatched);
+
+    if (dispatchOk) {
+        // Give rippled a beat to validate the dispatched tx
+        await new Promise(function(r){ setTimeout(r, 2000); });
+    }
+
+    // Helper: did the destination get funded? Only meaningful for Payments
+    // where the destination was previously unactivated. Xaman often submits
+    // via a different node cluster than the one we're querying; the
+    // destination's activation is observable on any node and is sufficient
+    // proof that the funding tx applied.
+    async function destinationActivated() {
+        if (!opts.verifyDestinationFunded || !txjson.Destination) return false;
+        try {
+            var info = await c.request({
+                command: 'account_info', account: txjson.Destination, ledger_index: 'validated'
+            });
+            return !!(info.result && info.result.account_data && info.result.account_data.Balance);
+        } catch(e) { return false; }
+    }
+
+    for (var i = 0; i < ATTEMPTS; i++) {
+        try {
+            var resp;
+            try {
+                // xrpl.js v3 typed request prefers tx_hash
+                resp = await c.request({ command: 'tx', tx_hash: result.txid, binary: false });
+            } catch (eFirst) {
+                // Some node configs still expect the legacy `transaction` field
+                resp = await c.request({ command: 'tx', transaction: result.txid, binary: false });
+            }
+            if (resp.result && resp.result.validated === true) {
+                lg(label + ' validated on ledger.', 'succ');
+                return { result: { meta: resp.result.meta, hash: result.txid, tx_json: resp.result } };
+            }
+            // Found but not yet validated — keep polling
+        } catch(e) {
+            lastErr = e;
+            // txnNotFound is expected during propagation; only abort on weird errors.
+            var msg = (e && (e.data && e.data.error || e.message)) || '';
+            if (msg && msg !== 'txnNotFound' && !/not.*found/i.test(msg)) {
+                // Unexpected error — log it once and keep going (could be transient node issue)
+                if (i === 0) lg('Validation poll: ' + msg + ' (retrying)', 'inf');
+            }
+        }
+
+        // Surface progress every ~10s so the user knows it's still working
+        if (i > 0 && i % 5 === 0) {
+            showLoad('VALIDATING ON LEDGER... (' + (i * GAP_MS / 1000) + 's)');
+            // PARALLEL FALLBACK: check if the destination got funded.
+            // This rescues the common Xaman case where the dispatched tx is
+            // already validated on another node but our `tx` query keeps
+            // returning txnNotFound due to propagation lag.
+            if (dispatchOk && await destinationActivated()) {
+                lg(label + ' confirmed via destination probe (Xaman dispatched, hash propagation pending).', 'succ');
+                return {
+                    result: {
+                        meta: { TransactionResult: 'tesSUCCESS', delivered_amount: txjson.Amount },
+                        hash: result.txid,
+                        tx_json: txjson,
+                        _viaDestinationProbe: true
+                    }
+                };
+            }
+        }
+
+        await new Promise(function(r){ setTimeout(r, GAP_MS); });
+    }
+
+    // One final destination probe before giving up — covers the case where
+    // funding actually completed in the last few seconds of the window.
+    if (dispatchOk && await destinationActivated()) {
+        lg(label + ' confirmed via destination probe at timeout.', 'succ');
+        return {
+            result: {
+                meta: { TransactionResult: 'tesSUCCESS', delivered_amount: txjson.Amount },
+                hash: result.txid,
+                tx_json: txjson,
+                _viaDestinationProbe: true
+            }
+        };
+    }
+
+    // Last-ditch fallback: scan the signer's recent account_tx for our hash.
+    // Some nodes admit the tx in account_tx index before the `tx` command sees it.
+    try {
+        lg('Direct lookup timed out — scanning account_tx for ' + result.txid.slice(0,12) + '...', 'inf');
+        var accResp = await c.request({
+            command: 'account_tx', account: s.address,
+            limit: 25, ledger_index_min: -1, ledger_index_max: -1, forward: false
+        });
+        var hits = (accResp.result && accResp.result.transactions) || [];
+        for (var k = 0; k < hits.length; k++) {
+            var h = hits[k].hash || (hits[k].tx && hits[k].tx.hash) || (hits[k].tx_json && hits[k].tx_json.hash);
+            if (h && h.toUpperCase() === result.txid) {
+                if (hits[k].validated) {
+                    lg(label + ' found via account_tx fallback.', 'succ');
+                    return { result: { meta: hits[k].meta, hash: result.txid, tx_json: hits[k].tx_json || hits[k].tx } };
+                }
+            }
+        }
+    } catch(e) { /* fall through to error */ }
+
+    var bithompBase = (NET === 'main') ? 'https://bithomp.com' : 'https://test.bithomp.com';
+    throw new Error(label + ' was signed in Xaman but our node has not seen it validate after 2 min. ' +
+                    'Tx may still succeed — check ' + bithompBase + '/explorer/' + result.txid + ' in a minute.');
 }
 
 async function refreshWallet(silent) {
@@ -2091,7 +2243,7 @@ async function createEscrow() {
             Amount: xrpl.xrpToDrops('1.5'),
             Memos: memoBundle.memos
         };
-        var fundRes = await submitAsPrimary(c, fundTx, 'Fund sub-wallet (1.5 XRP)');
+        var fundRes = await submitAsPrimary(c, fundTx, 'Fund sub-wallet (1.5 XRP)', { verifyDestinationFunded: true });
         if (fundRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Fund failed: ' + fundRes.result.meta.TransactionResult);
         // [9.1] Fund tx hash
         var fundHash = fundRes.result.hash || fundRes.result.tx_json && fundRes.result.tx_json.hash || '';
@@ -4286,7 +4438,21 @@ async function _xamanPoll(uuid) {
             var r = await fetch(proxy + '/api/payload/' + uuid);
             var s = await r.json();
             if (s.meta && s.meta.signed === true) {
-                return { signed: true, address: s.response && s.response.account, txid: s.response && s.response.txid };
+                // Xaman returns the txid in lowercase — normalize to uppercase
+                // so XRPL `tx` command lookups work correctly.
+                var rawTxid = (s.response && s.response.txid) || '';
+                var dispatched = (s.response && s.response.dispatched_result) ||
+                                 (s.meta && s.meta.dispatched_result) || '';
+                var dispatchedTo = (s.response && s.response.dispatched_to) ||
+                                   (s.meta && s.meta.dispatched_to) || '';
+                return {
+                    signed: true,
+                    address: s.response && s.response.account,
+                    txid: rawTxid ? rawTxid.toUpperCase() : '',
+                    hex: (s.response && s.response.hex) || '',  // signed tx blob — for fallback re-submission
+                    dispatched: dispatched,        // e.g. 'tesSUCCESS' if Xaman submitted
+                    dispatchedTo: dispatchedTo
+                };
             }
             if (s.meta && s.meta.signed === false && s.meta.resolved) {
                 return { signed: false, rejected: true };
