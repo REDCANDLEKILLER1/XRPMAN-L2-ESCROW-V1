@@ -946,6 +946,27 @@
 
 <script>
 // ============================================================
+// [00] HELPERS — define BEFORE anything else so they're available
+// to any function that runs (renderers, event handlers, etc.).
+// Function declarations hoist to the top of their scope, but placing
+// these here makes them obviously discoverable and immune to any
+// build-cache or deploy ordering quirks.
+// ============================================================
+function escapeHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() {
+            try { if (typeof lg === 'function') lg('Copied: ' + String(text).slice(0, 16) + '...', 'inf'); } catch(e) {}
+        }).catch(function() {});
+    }
+}
+
+// ============================================================
 // GLOBALS
 // ============================================================
 var NETS = {
@@ -1852,6 +1873,48 @@ async function submitAsPrimary(c, txjson, label, opts) {
         } catch(e) { return false; }
     }
 
+    // Probe for a CheckCreate side-effect. Same pattern as destinationActivated:
+    // we know the destination, we know what to look for (a Check from
+    // primary→sub-wallet). If we find it, the CheckCreate succeeded —
+    // CheckID extracted from the on-chain object directly. Returns the
+    // CheckID string or null. Caller passes verifyCheckCreated: true.
+    async function checkCreatedProbe() {
+        if (!opts.verifyCheckCreated || !txjson.Destination || !txjson.Account) return null;
+        try {
+            var resp = await c.request({
+                command: 'account_objects',
+                account: txjson.Destination, type: 'check', ledger_index: 'validated'
+            });
+            var objs = (resp.result && resp.result.account_objects) || [];
+            for (var i = objs.length - 1; i >= 0; i--) {
+                var o = objs[i];
+                if (o.LedgerEntryType === 'Check' && o.Account === txjson.Account && o.Destination === txjson.Destination) {
+                    return o.index;
+                }
+            }
+        } catch(e) {}
+        return null;
+    }
+
+    // Build a synthetic success result with a CreatedNode for the Check.
+    // Mimics the metadata shape that createEscrow's CheckID extractor
+    // expects, so callers don't need conditional handling.
+    function syntheticCheckSuccess(checkID) {
+        return {
+            result: {
+                meta: {
+                    TransactionResult: 'tesSUCCESS',
+                    AffectedNodes: [{
+                        CreatedNode: { LedgerEntryType: 'Check', LedgerIndex: checkID }
+                    }]
+                },
+                hash: result.txid,
+                tx_json: txjson,
+                _viaCheckProbe: true
+            }
+        };
+    }
+
     // ──────────────────────────────────────────────────────────────────
     //  XAMAN tesSUCCESS PATH — TRUST IT
     //
@@ -1882,8 +1945,21 @@ async function submitAsPrimary(c, txjson, label, opts) {
                     return { result: { meta: fetchResp.result.meta, hash: result.txid, tx_json: fetchResp.result } };
                 }
             } catch(e) { /* keep trying */ }
+            // Side-effect probe — much more reliable than tx-hash lookup
+            // when our node lags behind the cluster Xaman submitted to.
+            var dispCheckID = await checkCreatedProbe();
+            if (dispCheckID) {
+                lg(label + ' confirmed via Check probe during meta fetch. CheckID: ' + dispCheckID.slice(0,12) + '...', 'succ');
+                return syntheticCheckSuccess(dispCheckID);
+            }
         }
         // Xaman vouches for success even if our node hasn't caught up.
+        // Try Check probe one last time before returning empty meta.
+        var lateCheckID = await checkCreatedProbe();
+        if (lateCheckID) {
+            lg(label + ' confirmed via late Check probe. CheckID: ' + lateCheckID.slice(0,12) + '...', 'succ');
+            return syntheticCheckSuccess(lateCheckID);
+        }
         lg(label + ' validated by Xaman; proceeding without local metadata.', 'succ');
         return {
             result: {
@@ -1907,6 +1983,11 @@ async function submitAsPrimary(c, txjson, label, opts) {
                 _viaDestinationProbe: true
             }
         };
+    }
+    var earlyCheckID = await checkCreatedProbe();
+    if (earlyCheckID) {
+        lg(label + ' confirmed via Check probe (immediate). CheckID: ' + earlyCheckID.slice(0,12) + '...', 'succ');
+        return syntheticCheckSuccess(earlyCheckID);
     }
 
     for (var i = 0; i < ATTEMPTS; i++) {
@@ -1949,6 +2030,11 @@ async function submitAsPrimary(c, txjson, label, opts) {
                 }
             };
         }
+        var loopCheckID = await checkCreatedProbe();
+        if (loopCheckID) {
+            lg(label + ' confirmed via Check probe at ' + ((i+1) * GAP_MS / 1000) + 's. CheckID: ' + loopCheckID.slice(0,12) + '...', 'succ');
+            return syntheticCheckSuccess(loopCheckID);
+        }
 
         // Surface progress every ~10s so the user knows it's still working
         if (i > 0 && i % 5 === 0) {
@@ -1969,6 +2055,13 @@ async function submitAsPrimary(c, txjson, label, opts) {
                 _viaDestinationProbe: true
             }
         };
+    }
+
+    // Final CheckCreate probe before giving up.
+    var finalCheckID = await checkCreatedProbe();
+    if (finalCheckID) {
+        lg(label + ' confirmed via Check probe at timeout. CheckID: ' + finalCheckID.slice(0,12) + '...', 'succ');
+        return syntheticCheckSuccess(finalCheckID);
     }
 
     // Last-ditch fallback: scan the signer's recent account_tx for our hash.
@@ -2389,7 +2482,7 @@ async function createEscrow() {
             SendMax: { currency: currency, issuer: issuer, value: amount.toString() },
             Memos: memoBundle.memos
         };
-        var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + amount + ' ' + curInput + ')');
+        var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + amount + ' ' + curInput + ')', { verifyCheckCreated: true });
         if (checkRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('CheckCreate failed: ' + checkRes.result.meta.TransactionResult);
         // [9.2] CheckCreate tx hash
         var checkHash = checkRes.result.hash || checkRes.result.tx_json && checkRes.result.tx_json.hash || '';
@@ -2657,7 +2750,7 @@ async function runResumePending(pending, userPw, adminPw) {
             SendMax: { currency: pending.currencyHex, issuer: pending.issuer, value: pending.amount },
             Memos: pending.memos
         };
-        var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + pending.amount + ' ' + pending.currencyInput + ')');
+        var checkRes = await submitAsPrimary(c, checkTx, 'Create token check (' + pending.amount + ' ' + pending.currencyInput + ')', { verifyCheckCreated: true });
         if (checkRes.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('CheckCreate failed: ' + checkRes.result.meta.TransactionResult);
         var checkHash = checkRes.result.hash || (checkRes.result.tx_json && checkRes.result.tx_json.hash) || '';
         lg('Check created. TX: ' + (checkHash || 'N/A'), 'succ');
@@ -3585,20 +3678,8 @@ async function wdManualDelete() {
     }
 }
 
-// Tiny html-escape for memo content + any user-provided strings rendered into innerHTML
-function escapeHtml(s) {
-    return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-function copyToClipboard(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function() {
-            lg('Copied: ' + String(text).slice(0, 16) + '...', 'inf');
-        }).catch(function() {});
-    }
-}
+// Tiny html-escape and clipboard helpers moved to top of script (see [00] HELPERS).
+// (kept as comment marker so search results still surface this region)
 
 // ════════════════════════════════════════════════════════════════════
 //   [05] EMERGENCY RECOVERY — manual delete by seed (orphaned vaults)
@@ -5015,13 +5096,36 @@ async function _xamanPoll(uuid) {
             var r = await fetch(proxy + '/api/payload/' + uuid);
             var s = await r.json();
             if (s.meta && s.meta.signed === true) {
-                // Xaman returns the txid in lowercase — normalize to uppercase
-                // so XRPL `tx` command lookups work correctly.
+                // Xaman signs first, then dispatches asynchronously. The signed
+                // status flips true before dispatched_result is populated, so a
+                // naive "return on signed" gets us empty dispatch every time.
+                // Re-poll for up to ~12s waiting for dispatched_result, but bail
+                // early if it appears or if Xaman is in sign-only mode.
                 var rawTxid = (s.response && s.response.txid) || '';
                 var dispatched = (s.response && s.response.dispatched_result) ||
                                  (s.meta && s.meta.dispatched_result) || '';
                 var dispatchedTo = (s.response && s.response.dispatched_to) ||
                                    (s.meta && s.meta.dispatched_to) || '';
+
+                if (!dispatched) {
+                    for (var j = 0; j < 6; j++) {
+                        await new Promise(function(res) { setTimeout(res, 2000); });
+                        if (_xamanCancelled) break;
+                        try {
+                            var r2 = await fetch(proxy + '/api/payload/' + uuid);
+                            var s2 = await r2.json();
+                            var d2 = (s2.response && s2.response.dispatched_result) ||
+                                     (s2.meta && s2.meta.dispatched_result) || '';
+                            if (d2) {
+                                dispatched = d2;
+                                dispatchedTo = (s2.response && s2.response.dispatched_to) ||
+                                               (s2.meta && s2.meta.dispatched_to) || dispatchedTo;
+                                break;
+                            }
+                        } catch(e2) {}
+                    }
+                }
+
                 return {
                     signed: true,
                     address: s.response && s.response.account,
