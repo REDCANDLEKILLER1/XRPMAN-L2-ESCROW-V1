@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XMEME | Precision Escrow Terminal v2.0</title>
+    <title>XRPMAN | Precision Escrow Terminal v2.0</title>
     <!-- Speed: establish connections early, fetch fonts in parallel with CSS -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -97,6 +97,26 @@
         .dtabs{display:flex;gap:0;border:1px solid #222;overflow:hidden;margin-bottom:8px}
         .dtabs button{flex:1;padding:7px;font-size:.7em;border:none;border-right:1px solid #222;background:#080808;color:#555;cursor:pointer;font-family:inherit;text-transform:uppercase;transition:all .15s}
         .dtabs button:last-child{border-right:none}
+
+        /* TX EXPLORER cards */
+        .tx-card{border:1px solid #1a3344;background:#020a12;padding:8px;margin-bottom:6px;font-size:.72em;line-height:1.55}
+        .tx-card.tx-fail{border-color:#442222;background:#0a0202}
+        .tx-card.tx-self{border-color:#1a4422;background:#020a02}
+        .tx-card .txc-row{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:3px}
+        .tx-card .txc-type{font-family:'Orbitron',monospace;font-weight:700;color:var(--cyan);letter-spacing:1px;font-size:.95em}
+        .tx-card.tx-fail .txc-type{color:#ff6666}
+        .tx-card .txc-date{color:#558899;font-size:.85em}
+        .tx-card .txc-hash{font-family:'Share Tech Mono',monospace;color:#446677;font-size:.85em;cursor:pointer;word-break:break-all}
+        .tx-card .txc-hash:hover{color:var(--cyan)}
+        .tx-card .txc-line{color:#88aabb;margin-top:2px}
+        .tx-card .txc-line b{color:#aaccdd;font-weight:400}
+        .tx-card .txc-amt{color:var(--neon);font-weight:700}
+        .tx-card .txc-memo{margin-top:4px;padding:5px 6px;background:#001a22;border-left:2px solid var(--cyan);color:#aaffff;font-family:'Share Tech Mono',monospace;font-size:.95em;word-break:break-word}
+        .tx-card .txc-memo b{color:var(--cyan);letter-spacing:1px;display:block;font-size:.85em;margin-bottom:2px}
+        .tx-card .txc-result-ok{color:var(--neon);font-size:.85em}
+        .tx-card .txc-result-bad{color:#ff6666;font-size:.85em}
+        .tx-card .txc-ext{color:#446677;font-size:.85em;text-decoration:none;margin-left:6px}
+        .tx-card .txc-ext:hover{color:var(--cyan)}
         .dtabs button.on{background:var(--dim);color:var(--neon)}
 
         /* ESCROW DETAIL MODAL */
@@ -276,15 +296,12 @@
         .tx-empty{text-align:center;padding:20px;color:#444;font-size:.75em}
 
         /* ═══════════════════════════════════════════════════════════
-           MAIN TAB BAR — the 6 sequential sections
+           MAIN TAB BAR — the 7 sequential sections + HELP
            ═══════════════════════════════════════════════════════════ */
         .main-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid var(--neon);background:#050505;max-width:1200px;margin:0 auto 14px;box-shadow:0 0 12px rgba(0,255,0,0.12);position:relative;z-index:1}
-        /* Row 2 layout: [05] [LOG] [HELP  HELP] — HELP fills the empty 4th column */
-        .main-tabs > button:nth-child(7){grid-column:span 2}
-        /* On wider screens, everything fits in one row */
+        /* On wider screens, everything fits in one row (8 tabs) */
         @media (min-width:760px){
-            .main-tabs{grid-template-columns:repeat(7,1fr)}
-            .main-tabs > button:nth-child(7){grid-column:span 1}
+            .main-tabs{grid-template-columns:repeat(8,1fr)}
         }
         .main-tab{padding:11px 6px;font-family:'Orbitron',monospace;font-weight:700;font-size:10px;letter-spacing:2px;border:none;border-right:1px solid #111;border-bottom:1px solid #111;background:transparent;color:#446644;cursor:pointer;text-transform:uppercase;white-space:nowrap;transition:all 0.18s;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:0;overflow:hidden;text-overflow:ellipsis}
         /* Remove right border on last column (4th and 8th children on mobile; last on desktop) */
@@ -379,7 +396,7 @@
         <div class="splash-center">
             <span class="splash-icon">&#9762;</span>
             <div id="splash-hdr" class="splash-hdr">HELLO, COMMANDER</div>
-            <div class="splash-title">XMEME</div>
+            <div class="splash-title">XRPMAN</div>
             <div class="splash-dialog">
                 <div class="splash-avatar">
                     <i class="fa-solid">&#x1F680;</i>
@@ -458,7 +475,7 @@
                 </div>
                 <div style="flex:1">
                     <span class="lbl" style="font-size:10px">Repo</span>
-                    <input type="text" id="dev-gh-repo" placeholder="xmeme-escrow-config">
+                    <input type="text" id="dev-gh-repo" placeholder="xrpman-escrow-config">
                 </div>
             </div>
             <div class="dev-row" style="gap:6px">
@@ -650,8 +667,11 @@
     <button class="main-tab main-tab-warn" data-maintab="recover" onclick="setMainTab('recover')">
         <span class="num">05</span><span>RECOVER</span>
     </button>
+    <button class="main-tab main-tab-cyan" data-maintab="explorer" onclick="setMainTab('explorer')">
+        <span class="num">06</span><span>EXPLORER</span>
+    </button>
     <button class="main-tab" data-maintab="log" onclick="setMainTab('log')">
-        <span class="num">06</span><span>LOG</span>
+        <span class="num">07</span><span>LOG</span>
     </button>
     <button class="main-tab main-tab-warn" onclick="openTutorial()" title="Open user manual" style="min-width:70px;flex:0 0 auto">
         <span class="num">&#10067;</span><span>HELP</span>
@@ -685,7 +705,7 @@
         <!-- Storage indicator -->
         <div id="storage_status" style="font-size:.65em;color:#00aa00;margin-top:4px"></div>
         <div style="margin-top:6px">
-            <button onclick="xmemeLogout()" style="width:auto;padding:5px 10px;font-size:.65em;background:#1a0000;border-color:#442222;color:#aa4444;letter-spacing:1px">&#10697; LOG OUT &amp; CLEAR SESSION</button>
+            <button onclick="xrpmanLogout()" style="width:auto;padding:5px 10px;font-size:.65em;background:#1a0000;border-color:#442222;color:#aa4444;letter-spacing:1px">&#10697; LOG OUT &amp; CLEAR SESSION</button>
         </div>
         <div id="w_assets" class="hidden" style="margin-top:8px;border:1px solid #1a1a1a;background:#030303;padding:8px">
             <div style="font-family:'Orbitron',monospace;font-size:.65em;color:var(--dim);margin-bottom:6px">PORTFOLIO</div>
@@ -847,6 +867,40 @@
         <div id="delete_receipt" class="hidden"></div>
     </div>
 
+    <!-- [06] TX EXPLORER -->
+    <div class="panel full" data-tab="explorer" style="border-color:var(--cyan)">
+        <h2>[06] TX EXPLORER <span class="tag tag-c">BUILT-IN XRPSCAN</span></h2>
+
+        <div style="background:#010810;border:1px solid #002255;padding:8px;font-size:.7em;color:var(--cyan);line-height:1.6;margin-bottom:8px">
+            <b>ON-CHAIN HISTORY:</b> View transactions for your primary wallet or any escrow vault. Memos attached by this app (lock terms, unlock date, vault address) are decoded and displayed inline. Network: <span id="exp_net_badge" class="inf">—</span>
+        </div>
+
+        <label>SELECT WALLET</label>
+        <select id="exp_select" style="margin-bottom:4px"><option value="">-- connect wallet first --</option></select>
+
+        <div style="display:flex;gap:6px;align-items:flex-end;margin-bottom:6px">
+            <div style="flex:1">
+                <label>OR PASTE ADDRESS</label>
+                <input id="exp_custom" type="text" placeholder="r..." spellcheck="false">
+            </div>
+            <div style="width:90px">
+                <label>LIMIT</label>
+                <select id="exp_limit"><option>25</option><option selected>50</option><option>100</option></select>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:6px">
+            <button id="exp_load_btn" onclick="loadExplorerHistory()" style="flex:1">LOAD HISTORY</button>
+            <button onclick="clearExplorerResults()" style="width:90px;background:#111;border-color:#333;color:#888">CLEAR</button>
+        </div>
+
+        <div id="exp_status" style="font-size:.7em;color:#00aa00;margin-top:6px;min-height:16px"></div>
+        <div id="exp_results" style="margin-top:8px"></div>
+        <div id="exp_more_wrap" class="hidden" style="margin-top:6px">
+            <button id="exp_more_btn" onclick="loadMoreExplorerHistory()" style="background:#0a1a1a;border-color:var(--cyan);color:var(--cyan)">LOAD OLDER TXS</button>
+        </div>
+    </div>
+
     <!-- BLACK BOX -->
     <div class="panel full" data-tab="log">
         <h2>[SYSTEM LOG] <span class="tag tag-g">BLACK BOX</span></h2>
@@ -855,7 +909,7 @@
 
 </div>
 
-<div class="ftr"><span>POWERED BY XMEME</span></div>
+<div class="ftr"><span>POWERED BY XRPMAN</span></div>
 
 <script>
 // ============================================================
@@ -875,7 +929,7 @@ var NET = "main";
 // Stone pushes a commit → every running copy of the app picks up
 // the new values on next load. Users cannot override this locally.
 //
-// SETUP:  Create a public repo (e.g. "xmeme-escrow-config"), drop a
+// SETUP:  Create a public repo (e.g. "xrpman-escrow-config"), drop a
 // config.json file into it, and point this constant at the raw URL.
 // Example: https://raw.githubusercontent.com/<user>/<repo>/main/config.json
 // ════════════════════════════════════════════════════════════════════
@@ -1330,7 +1384,7 @@ async function generateTestWallet() {
 
         // Build wallet JSON for save
         var walletJson = {
-            type: 'xmeme_test_wallet',
+            type: 'xrpman_test_wallet',
             created: new Date().toISOString(),
             network: 'test',
             wallet: { address: testWallet.address, seed: testWallet.seed },
@@ -1416,7 +1470,7 @@ function saveWalletJson() {
     if (!seed) return showErr('No seed to save.');
 
     var data = {
-        type: 'xmeme_wallet',
+        type: 'xrpman_wallet',
         created: new Date().toISOString(),
         network: NET,
         wallet: { address: wallet.address, seed: seed }
@@ -1902,7 +1956,7 @@ document.addEventListener('input', function(e) {
 function buildEscrowMemos(opts) {
     // opts: { tokenName, amount, unlockDate (Date|number), subAddress, lockSeconds }
     var titleMatch = (document.title || '').match(/v[\d.]+/);
-    var APP_LABEL = 'XMEME Precision Escrow Terminal' + (titleMatch ? ' ' + titleMatch[0] : '');
+    var APP_LABEL = 'XRPMAN Precision Escrow Terminal' + (titleMatch ? ' ' + titleMatch[0] : '');
 
     // Human-readable lock duration
     var totalSec = Math.max(0, opts.lockSeconds | 0);
@@ -1920,7 +1974,7 @@ function buildEscrowMemos(opts) {
     var unlockUTC = d.getUTCFullYear() + '-' + pad(d.getUTCMonth()+1) + '-' + pad(d.getUTCDate()) +
                     ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ' UTC';
 
-    var msg = 'XMEME ESCROW LOCK | ' + opts.amount + ' ' + opts.tokenName +
+    var msg = 'XRPMAN ESCROW LOCK | ' + opts.amount + ' ' + opts.tokenName +
               ' | locked ' + dur +
               ' | unlocks ' + unlockUTC +
               ' | vault ' + opts.subAddress +
@@ -1945,7 +1999,7 @@ function buildEscrowMemos(opts) {
         text: msg,
         memos: [{
             Memo: {
-                MemoType:   s2h('xmeme/escrow-lock'),
+                MemoType:   s2h('xrpman/escrow-lock'),
                 MemoFormat: s2h('text/plain'),
                 MemoData:   s2h(msg)
             }
@@ -2401,7 +2455,7 @@ function exportEscrows() {
     var blob = new Blob([data], { type: 'application/json' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'xmeme_escrow_backup_' + new Date().toISOString().slice(0, 10) + '.json';
+    a.download = 'xrpman_escrow_backup_' + new Date().toISOString().slice(0, 10) + '.json';
     a.click();
     lg('Escrow records exported.', 'succ');
 }
@@ -3139,10 +3193,268 @@ function _sessionSave(s) {
 function _sessionClear() {
     try { localStorage.removeItem(SESSION_KEY); } catch(e) {}
 }
-function xmemeLogout() {
+function xrpmanLogout() {
     _sessionClear();
     lg('Session cleared. Reloading...', 'inf');
     setTimeout(function() { location.reload(); }, 500);
+}
+
+// ============================================================
+// [06] TX EXPLORER — Built-in account_tx viewer with memo decoding
+// ============================================================
+var _expState = {
+    address: null,        // currently loaded address
+    marker: null,         // pagination marker from XRPL
+    txs: []               // accumulated tx list
+};
+
+// Hex -> UTF-8 string. Prefers xrpl helper; safe on bad hex (returns raw hex marked).
+function hexToStr(hex) {
+    if (!hex) return '';
+    try {
+        if (window.xrpl && typeof xrpl.convertHexToString === 'function') {
+            return xrpl.convertHexToString(hex);
+        }
+    } catch(e) {}
+    try {
+        var bytes = [];
+        for (var i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
+        return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
+    } catch(e) {
+        return '0x' + hex;
+    }
+}
+
+// Currency code: 3-char standard or 40-char hex (decode trailing nulls).
+function decodeCurrency(cur) {
+    if (!cur) return '';
+    if (cur.length === 3) return cur;
+    if (cur.length === 40) {
+        var s = hexToStr(cur).replace(/\0+$/, '').trim();
+        return s || cur.slice(0, 8) + '…';
+    }
+    return cur;
+}
+
+// Ripple epoch (sec since 2000-01-01 UTC) -> JS Date
+function rippleTimeToDate(rt) {
+    if (rt == null) return null;
+    return new Date((rt + 946684800) * 1000);
+}
+
+function fmtAmount(amt) {
+    if (amt == null) return '';
+    if (typeof amt === 'string') return xrpl.dropsToXrp(amt) + ' XRP';
+    if (typeof amt === 'object' && amt.value) {
+        return amt.value + ' ' + decodeCurrency(amt.currency);
+    }
+    return String(amt);
+}
+
+function fmtAddrShort(a) {
+    if (!a) return '—';
+    return a.slice(0, 6) + '…' + a.slice(-4);
+}
+
+// Pull amount/asset out of a tx for display
+function summarizeTx(tx, meta) {
+    var t = tx.TransactionType;
+    if (t === 'Payment') {
+        var delivered = (meta && meta.delivered_amount) || tx.Amount;
+        return fmtAmount(delivered);
+    }
+    if (t === 'CheckCreate') return fmtAmount(tx.SendMax);
+    if (t === 'CheckCash')   return fmtAmount(tx.Amount || tx.DeliverMin);
+    if (t === 'EscrowCreate') return fmtAmount(tx.Amount);
+    if (t === 'TrustSet' && tx.LimitAmount) {
+        return 'Limit ' + tx.LimitAmount.value + ' ' + decodeCurrency(tx.LimitAmount.currency);
+    }
+    if (t === 'AccountDelete') return 'destination: ' + fmtAddrShort(tx.Destination);
+    return '';
+}
+
+// Decode all memos on a tx; returns array of {type, format, data} strings
+function decodeMemos(memosArr) {
+    if (!Array.isArray(memosArr) || !memosArr.length) return [];
+    return memosArr.map(function(m) {
+        var mm = m.Memo || {};
+        return {
+            type:   hexToStr(mm.MemoType   || ''),
+            format: hexToStr(mm.MemoFormat || ''),
+            data:   hexToStr(mm.MemoData   || '')
+        };
+    });
+}
+
+function explorerExplorerUrl(hash, network) {
+    // Bithomp covers both mainnet and testnet cleanly
+    var base = (network === 'main') ? 'https://bithomp.com' : 'https://test.bithomp.com';
+    return base + '/explorer/' + hash;
+}
+
+// Populate the wallet selector with primary + every stored vault
+function populateExplorerSelector() {
+    var sel = document.getElementById('exp_select');
+    if (!sel) return;
+    var prev = sel.value;
+    var html = '';
+    if (wallet && wallet.address) {
+        html += '<option value="' + wallet.address + '">PRIMARY · ' + fmtAddrShort(wallet.address) + '</option>';
+    } else {
+        html += '<option value="">-- connect wallet first --</option>';
+    }
+    var escrows = getEscrows();
+    if (escrows && escrows.length) {
+        // Filter to current network only
+        var sameNet = escrows.filter(function(e){ return !e.network || e.network === NET; });
+        sameNet.forEach(function(e) {
+            var label = 'VAULT · ' + fmtAddrShort(e.subAddress) + ' (' + e.amount + ' ' + e.currencyInput + ')';
+            html += '<option value="' + e.subAddress + '">' + label + '</option>';
+        });
+    }
+    sel.innerHTML = html;
+    // Restore previous selection if still valid
+    if (prev && Array.from(sel.options).some(function(o){ return o.value === prev; })) {
+        sel.value = prev;
+    }
+    var badge = document.getElementById('exp_net_badge');
+    if (badge) badge.textContent = (NET || '?').toUpperCase();
+}
+
+function clearExplorerResults() {
+    _expState = { address: null, marker: null, txs: [] };
+    var r = document.getElementById('exp_results'); if (r) r.innerHTML = '';
+    var s = document.getElementById('exp_status');  if (s) s.textContent = '';
+    var m = document.getElementById('exp_more_wrap'); if (m) m.classList.add('hidden');
+}
+
+async function loadExplorerHistory() {
+    var sel = document.getElementById('exp_select');
+    var custom = (document.getElementById('exp_custom').value || '').trim();
+    var address = custom || (sel ? sel.value : '');
+    if (!address) { showErr('Select a wallet or paste an address.'); return; }
+    if (!/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(address)) { showErr('That does not look like a valid XRPL address.'); return; }
+
+    clearExplorerResults();
+    _expState.address = address;
+    var limit = parseInt(document.getElementById('exp_limit').value, 10) || 50;
+    var status = document.getElementById('exp_status');
+    var btn = document.getElementById('exp_load_btn');
+    btn.disabled = true; btn.textContent = 'LOADING...';
+    status.textContent = 'Fetching history for ' + fmtAddrShort(address) + ' on ' + NET.toUpperCase() + '...';
+
+    try {
+        var c = await getClient();
+        var resp = await c.request({
+            command: 'account_tx', account: address,
+            limit: limit, ledger_index_min: -1, ledger_index_max: -1, forward: false
+        });
+        var txs = (resp.result && resp.result.transactions) || [];
+        _expState.txs = txs;
+        _expState.marker = resp.result.marker || null;
+        renderExplorerList();
+        status.innerHTML = '<span class="succ">' + txs.length + ' tx loaded · ' + fmtAddrShort(address) + ' · ' + NET.toUpperCase() + '</span>';
+        document.getElementById('exp_more_wrap').classList.toggle('hidden', !_expState.marker);
+        lg('Explorer: loaded ' + txs.length + ' tx for ' + fmtAddrShort(address), 'inf');
+    } catch (e) {
+        status.innerHTML = '<span style="color:#ff6666">Error: ' + (e.message || e) + '</span>';
+        lg('Explorer error: ' + (e.message || e), 'err');
+    } finally {
+        btn.disabled = false; btn.textContent = 'LOAD HISTORY';
+    }
+}
+
+async function loadMoreExplorerHistory() {
+    if (!_expState.address || !_expState.marker) return;
+    var btn = document.getElementById('exp_more_btn');
+    btn.disabled = true; btn.textContent = 'LOADING...';
+    try {
+        var c = await getClient();
+        var limit = parseInt(document.getElementById('exp_limit').value, 10) || 50;
+        var resp = await c.request({
+            command: 'account_tx', account: _expState.address,
+            limit: limit, ledger_index_min: -1, ledger_index_max: -1, forward: false,
+            marker: _expState.marker
+        });
+        var more = (resp.result && resp.result.transactions) || [];
+        _expState.txs = _expState.txs.concat(more);
+        _expState.marker = resp.result.marker || null;
+        renderExplorerList();
+        document.getElementById('exp_more_wrap').classList.toggle('hidden', !_expState.marker);
+        document.getElementById('exp_status').innerHTML =
+            '<span class="succ">' + _expState.txs.length + ' tx loaded · ' + fmtAddrShort(_expState.address) + '</span>';
+    } catch (e) {
+        document.getElementById('exp_status').innerHTML = '<span style="color:#ff6666">Error: ' + (e.message || e) + '</span>';
+    } finally {
+        btn.disabled = false; btn.textContent = 'LOAD OLDER TXS';
+    }
+}
+
+function renderExplorerList() {
+    var box = document.getElementById('exp_results');
+    if (!box) return;
+    if (!_expState.txs.length) {
+        box.innerHTML = '<div style="color:#444;font-size:.75em;padding:8px">No transactions found.</div>';
+        return;
+    }
+    var html = '';
+    var viewer = _expState.address;
+    _expState.txs.forEach(function(item) {
+        // xrpl.js v3 returns the tx fields under tx_json or tx; support both
+        var tx = item.tx_json || item.tx || item;
+        var meta = item.meta || {};
+        var hash = item.hash || tx.hash || (item.tx && item.tx.hash) || '';
+        var type = tx.TransactionType || 'Unknown';
+        var dt = rippleTimeToDate(tx.date);
+        var dateStr = dt ? (dt.toISOString().slice(0, 10) + ' ' + dt.toISOString().slice(11, 16) + 'Z') : '—';
+        var result = (meta.TransactionResult) || '';
+        var ok = result === 'tesSUCCESS';
+        var from = tx.Account || '';
+        var to = tx.Destination || tx.Owner || '';
+        var amount = summarizeTx(tx, meta);
+        var memos = decodeMemos(tx.Memos);
+        var fail = !ok && result;
+        var selfTx = from === viewer;
+
+        var card = '<div class="tx-card' + (fail ? ' tx-fail' : '') + (selfTx && ok ? ' tx-self' : '') + '">';
+        card += '<div class="txc-row">';
+        card +=   '<div><span class="txc-type">' + type + '</span>';
+        if (amount) card += ' <span class="txc-amt">· ' + amount + '</span>';
+        card +=   '</div>';
+        card +=   '<div class="txc-date">' + dateStr + '</div>';
+        card += '</div>';
+
+        if (from || to) {
+            card += '<div class="txc-line">';
+            if (from) card += '<b>FROM</b> ' + fmtAddrShort(from);
+            if (to)   card += (from ? ' &nbsp; <b>TO</b> ' : '<b>TO</b> ') + fmtAddrShort(to);
+            card += '</div>';
+        }
+
+        if (memos.length) {
+            memos.forEach(function(m) {
+                var label = m.type ? m.type.toUpperCase() : 'MEMO';
+                card += '<div class="txc-memo"><b>' + escapeHtml(label) + '</b>' + escapeHtml(m.data || '(empty)') + '</div>';
+            });
+        }
+
+        card += '<div class="txc-row" style="margin-top:4px">';
+        card +=   '<div>' + (ok
+                    ? '<span class="txc-result-ok">&#10003; ' + result + '</span>'
+                    : '<span class="txc-result-bad">&#10007; ' + (result || 'PENDING') + '</span>');
+        if (hash) {
+            card += ' &nbsp; <a class="txc-ext" target="_blank" rel="noopener" href="' + explorerExplorerUrl(hash, NET) + '">[Bithomp &#8599;]</a>';
+        }
+        card +=   '</div>';
+        if (hash) {
+            card += '<div class="txc-hash" title="Click to copy" onclick="copyToClipboard(\'' + hash + '\')">' + hash + '</div>';
+        }
+        card += '</div>';
+
+        card += '</div>';
+        html += card;
+    });
+    box.innerHTML = html;
 }
 
 function dismissSplash() {
@@ -3752,7 +4064,7 @@ function _buildConfigPayload() {
     return {
         version: (_remoteConfig && _remoteConfig.version ? _remoteConfig.version : 0) + 1,
         updated: new Date().toISOString().slice(0, 10),
-        appName: (_remoteConfig && _remoteConfig.appName) || 'XMEME Precision Escrow Terminal',
+        appName: (_remoteConfig && _remoteConfig.appName) || 'XRPMAN Precision Escrow Terminal',
         announcement: (_remoteConfig && _remoteConfig.announcement) || '',
         gate: {
             enabled: document.getElementById('dev-gate-toggle').classList.contains('on'),
@@ -4265,6 +4577,10 @@ function setMainTab(tab) {
     }
     // Scroll to top of content
     try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch(e) {}
+    // Auto-populate explorer wallet list when entering that tab
+    if (tab === 'explorer') {
+        try { populateExplorerSelector(); } catch(e) {}
+    }
     if (window._xrpmanReact) window._xrpmanReact('main-tab-' + tab);
 }
 // Expose for debugging / deep links
