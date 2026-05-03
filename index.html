@@ -1989,6 +1989,29 @@ async function submitAsPrimary(c, txjson, label, opts) {
     //  caller can fall back to account_objects if needed.
     // ──────────────────────────────────────────────────────────────────
     if (dispatchOk) {
+        // FAST PATH for CheckCreate (auditor reorder): derive CheckID directly
+        // from the signed blob's Sequence. Xaman has finalized signing — the
+        // Sequence is locked in — and CheckID is a pure function of (Account,
+        // Sequence). No metadata wait, no account_objects retry, no node-lag
+        // race. This collapses the post-CheckCreate latency from ~15s to ~0ms.
+        if (opts.verifyCheckCreated && result.hex) {
+            var seq = decodeSignedSequence(result.hex);
+            if (seq != null) {
+                try {
+                    var derivedID = await deriveCheckID(s.address, seq);
+                    lg(label + ' CheckID derived from signed Sequence (' + seq + '): ' + derivedID.slice(0,12) + '...', 'succ');
+                    return syntheticCheckSuccess(derivedID);
+                } catch (derivErr) {
+                    lg('CheckID derivation failed: ' + derivErr.message + ' — falling back to metadata fetch.', 'inf');
+                }
+            } else {
+                lg('Could not decode Sequence from signed blob — falling back to metadata fetch.', 'inf');
+            }
+        }
+
+        // SLOW PATH: metadata fetch loop. Used for the fund Payment (no
+        // verifyCheckCreated) or as fallback when derivation can't extract
+        // a Sequence (would indicate xrpl.js codec incompatibility).
         lg(label + ' confirmed by Xaman (' + result.dispatched + '). Fetching metadata...', 'inf');
         var metaDeadline = Date.now() + 15000; // 15s window for metadata
         while (Date.now() < metaDeadline) {
@@ -2011,30 +2034,11 @@ async function submitAsPrimary(c, txjson, label, opts) {
             }
         }
         // Xaman vouches for success even if our node hasn't caught up.
-        // Try Check probe one last time before returning empty meta.
+        // Try Check probe one last time before deciding the final outcome.
         var lateCheckID = await checkCreatedProbe();
         if (lateCheckID) {
             lg(label + ' confirmed via late Check probe. CheckID: ' + lateCheckID.slice(0,12) + '...', 'succ');
             return syntheticCheckSuccess(lateCheckID);
-        }
-
-        // AUDITOR PATCH #5: never return empty AffectedNodes for a CheckCreate
-        // without a CheckID. Try deterministic derivation from the signed
-        // Sequence — Xaman gave us the signed blob, which contains the exact
-        // Sequence the network will assign on inclusion. Combined with the
-        // sender AccountID and the Check namespace byte, that uniquely pins
-        // the CheckID without any network query.
-        if (opts.verifyCheckCreated && result.hex) {
-            var seq = decodeSignedSequence(result.hex);
-            if (seq != null) {
-                try {
-                    var derivedID = await deriveCheckID(s.address, seq);
-                    lg(label + ' CheckID derived from signed Sequence (' + seq + '): ' + derivedID.slice(0,12) + '...', 'succ');
-                    return syntheticCheckSuccess(derivedID);
-                } catch (derivErr) {
-                    lg('CheckID derivation failed: ' + derivErr.message, 'inf');
-                }
-            }
         }
 
         // CheckCreate that reached this point with no derivable ID is unsafe to
