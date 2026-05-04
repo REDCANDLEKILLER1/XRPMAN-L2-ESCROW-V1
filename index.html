@@ -165,6 +165,29 @@
         .reserve-note{border:1px solid #1a2a1a;background:#010801;padding:8px;font-size:.7em;color:#558855;line-height:1.6;margin-top:6px}
         .reserve-note b{color:#00aa00}
 
+        /* ─── CREATE TAB REDESIGN ─── softer, step-by-step rhythm */
+        .step-card{border:1px solid #0a2a0a;background:#020602;padding:14px;margin:10px 0;border-radius:2px;position:relative}
+        .step-card:hover{border-color:#1a3a1a}
+        .step-num{display:inline-block;font-family:'Orbitron',monospace;font-size:.62em;letter-spacing:3px;color:var(--cyan);background:#011215;border:1px solid #033842;padding:3px 8px;margin-bottom:8px}
+        .step-title{font-family:'Orbitron',monospace;font-size:.78em;color:var(--neon);letter-spacing:2px;margin-bottom:2px;display:inline-block;margin-left:6px}
+        .step-hint{font-size:.68em;color:#558855;margin:2px 0 10px 0;line-height:1.5}
+        .pw-pair{display:flex;gap:6px;margin-top:4px}
+        .pw-pair .pw-wrap{flex:1}
+        @media(max-width:480px){ .pw-pair{flex-direction:column;gap:4px} }
+        .pw-section{border:1px solid #1a2a1a;background:#020602;padding:8px 10px;margin-top:8px;border-radius:2px}
+        .pw-section-title{font-family:'Orbitron',monospace;font-size:.62em;color:#00aa00;letter-spacing:2px;margin-bottom:6px}
+        .pw-note{font-size:.65em;color:#aa8866;line-height:1.55;margin:6px 0 10px 0;padding:6px 8px;background:#100800;border-left:2px solid #aa6600}
+        .help-toggle{font-family:'Orbitron',monospace;font-size:.62em;color:var(--cyan);background:none;border:1px solid #033842;letter-spacing:2px;padding:5px 10px;cursor:pointer;margin-bottom:6px;width:auto}
+        .help-toggle:hover{background:#011215;color:var(--cyan)}
+        .help-content{display:none;border:1px solid #033842;background:#010c10;padding:10px 12px;font-size:.72em;color:#88bbcc;line-height:1.7;margin-bottom:10px;border-radius:2px}
+        .help-content.shown{display:block}
+        .help-content b{color:var(--cyan)}
+        .help-content ul{margin:4px 0 0 0;padding-left:18px}
+        .help-content li{margin-bottom:4px}
+        .lock-btn-big{font-family:'Orbitron',monospace;font-size:.95em;letter-spacing:3px;padding:14px 18px;margin-top:14px;line-height:1.3}
+        .label-clean{font-family:'Orbitron',monospace;font-size:.7em;color:#00cc44;letter-spacing:1.5px;display:block;margin:6px 0 4px 0}
+        .input-hint{font-size:.62em;color:#446644;margin-top:2px;line-height:1.4}
+
         /* [3] Receipt warning note */
         .receipt-note{color:#ffcc00;font-size:.7em;margin-top:6px;padding:4px 0;border-top:1px solid #221100}
 
@@ -776,62 +799,94 @@
         <!-- Pending escrows banner — only renders when there are pending records -->
         <div id="pending_banner" class="hidden" style="background:#1a1000;border:1px solid #aa6600;padding:8px;margin-bottom:8px;font-size:.72em;color:#ffaa44;line-height:1.55"></div>
 
-        <!-- [10] Reserve explainer -->
-        <div class="reserve-note">
-            <b>HOW THIS WORKS:</b> Each escrow creates a sub-wallet funded with ~1.5 XRP. The XRPL base reserve (1 XRP) plus owner reserve (0.2 XRP per object such as a trust line) locks XRP in the sub-wallet while it holds tokens. <b>Claiming tokens is separate from recovering XRP</b> — after claiming, you must delete the sub-wallet in section [05] to recover the XRP minus the 0.2 XRP AccountDelete fee. Keep both passwords safe: <b>if both passwords are lost, vault recovery is impossible.</b>
+        <!-- Collapsible help — replaces the dense reserve-note paragraph -->
+        <button type="button" class="help-toggle" onclick="var c=document.getElementById('how_works');c.classList.toggle('shown');this.textContent=c.classList.contains('shown')?'\u25BC HIDE EXPLANATION':'\u25B6 HOW DOES THIS WORK?';">&#9654; HOW DOES THIS WORK?</button>
+        <div id="how_works" class="help-content">
+            <ul>
+                <li>Each lock creates a brand-new <b>sub-wallet</b> on the XRPL just for this escrow.</li>
+                <li>The sub-wallet uses about <b>1.5 XRP</b> for network reserves while it holds your tokens. You get most of that XRP back when you delete the wallet later.</li>
+                <li>To unlock: <b>claim the tokens</b> in tab [04], then <b>recover the XRP</b> in tab [05]. Two steps, both gated by your passwords.</li>
+                <li>The seed for the sub-wallet is encrypted with both passwords and never leaves your browser. <b>Lose both passwords and the tokens are unrecoverable</b> — by design.</li>
+            </ul>
         </div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
-            <div>
-                <label>SELECT TOKEN TO ESCROW</label>
-                <select id="e_token_select" onchange="onTokenSelect()">
-                    <option value="">-- Connect wallet to load tokens --</option>
-                </select>
-                <div id="e_token_info" style="font-size:.65em;color:var(--txt);margin:4px 0;min-height:28px"></div>
-                <label>AMOUNT TO ESCROW</label>
-                <div style="display:flex;gap:4px">
-                    <input id="e_amount" type="number" placeholder="e.g. 1000" step="any" style="flex:1">
-                    <button onclick="setMaxAmount()" style="width:55px;font-size:.7em;padding:0">MAX</button>
+        <!-- ═════════════ STEP 1: WHAT TO LOCK ═════════════ -->
+        <div class="step-card">
+            <span class="step-num">STEP 1</span><span class="step-title">CHOOSE TOKEN &amp; AMOUNT</span>
+            <div class="step-hint">Pick which token you want to lock and how much.</div>
+
+            <label class="label-clean">TOKEN</label>
+            <select id="e_token_select" onchange="onTokenSelect()">
+                <option value="">-- Connect wallet to load tokens --</option>
+            </select>
+            <div id="e_token_info" style="font-size:.65em;color:var(--txt);margin:4px 0;min-height:28px"></div>
+
+            <label class="label-clean">AMOUNT</label>
+            <div style="display:flex;gap:4px">
+                <input id="e_amount" type="number" placeholder="e.g. 1000" step="any" style="flex:1">
+                <button onclick="setMaxAmount()" style="width:60px;font-size:.7em;padding:0">MAX</button>
+            </div>
+            <div class="input-hint">Tap MAX to use your full balance of the selected token.</div>
+        </div>
+
+        <!-- ═════════════ STEP 2: UNLOCK TIME ═════════════ -->
+        <div class="step-card">
+            <span class="step-num">STEP 2</span><span class="step-title">SET UNLOCK TIME</span>
+            <div class="step-hint">Pick a preset, or set a specific date and time.</div>
+
+            <label class="label-clean">QUICK PRESETS</label>
+            <div class="dur-btns" id="durBtns">
+                <button onclick="setDur(this,30)">30 DAYS</button>
+                <button onclick="setDur(this,90)">90 DAYS</button>
+                <button onclick="setDur(this,180)">6 MONTHS</button>
+                <button onclick="setDur(this,365)">1 YEAR</button>
+            </div>
+
+            <label class="label-clean">CUSTOM DATE &amp; TIME</label>
+            <input id="e_custom_date" type="datetime-local" onchange="clearDurBtns()" style="font-family:'Share Tech Mono',monospace;font-size:.95em">
+            <div class="input-hint">Tokens unlock at this exact moment. You can claim any time after.</div>
+        </div>
+
+        <!-- ═════════════ STEP 3: PASSWORDS ═════════════ -->
+        <div class="step-card">
+            <span class="step-num">STEP 3</span><span class="step-title">CREATE TWO PASSWORDS</span>
+            <div class="step-hint">Both passwords are required together to claim the tokens later. Save them somewhere safe.</div>
+
+            <div class="pw-note">
+                &#9888; Both passwords are required to recover this escrow. They <b>cannot be reset</b> &mdash; this is what makes it self-custody. Store them in a password manager.
+            </div>
+
+            <div class="pw-section">
+                <div class="pw-section-title">USER PASSWORD &middot; needed to claim tokens</div>
+                <div class="pw-pair">
+                    <div class="pw-wrap">
+                        <input id="e_user_pw" type="password" placeholder="Set password (8+ chars)" autocapitalize="off" autocorrect="off" spellcheck="false">
+                        <button class="pw-toggle" type="button" onclick="togglePw('e_user_pw',this)">SHOW</button>
+                    </div>
+                    <div class="pw-wrap">
+                        <input id="e_user_pw2" type="password" placeholder="Confirm" autocapitalize="off" autocorrect="off" spellcheck="false">
+                        <button class="pw-toggle" type="button" onclick="togglePw('e_user_pw2',this)">SHOW</button>
+                    </div>
                 </div>
             </div>
-            <div>
-                <label>LOCK DURATION</label>
-                <div class="dur-btns" id="durBtns">
-                    <button onclick="setDur(this,30)">30D</button>
-                    <button onclick="setDur(this,90)">90D</button>
-                    <button onclick="setDur(this,180)">6M</button>
-                    <button onclick="setDur(this,365)">1Y</button>
-                </div>
-                <label>OR CUSTOM END DATE</label>
-                <input id="e_custom_date" type="datetime-local" onchange="clearDurBtns()">
 
-                <!-- [7] User password with confirm -->
-                <label>USER PASSWORD (FOR CLAIM)</label>
-                <div class="pw-wrap">
-                    <input id="e_user_pw" type="password" placeholder="Set a password (min 8 chars)" autocapitalize="off" autocorrect="off" spellcheck="false">
-                    <button class="pw-toggle" type="button" onclick="togglePw('e_user_pw',this)">SHOW</button>
+            <div class="pw-section">
+                <div class="pw-section-title">ADMIN PASSWORD &middot; second factor for claim</div>
+                <div class="pw-pair">
+                    <div class="pw-wrap">
+                        <input id="e_admin_pw" type="password" placeholder="Set password (8+ chars)" autocapitalize="off" autocorrect="off" spellcheck="false">
+                        <button class="pw-toggle" type="button" onclick="togglePw('e_admin_pw',this)">SHOW</button>
+                    </div>
+                    <div class="pw-wrap">
+                        <input id="e_admin_pw2" type="password" placeholder="Confirm" autocapitalize="off" autocorrect="off" spellcheck="false">
+                        <button class="pw-toggle" type="button" onclick="togglePw('e_admin_pw2',this)">SHOW</button>
+                    </div>
                 </div>
-                <div class="pw-wrap">
-                    <input id="e_user_pw2" type="password" placeholder="Confirm user password" autocapitalize="off" autocorrect="off" spellcheck="false">
-                    <button class="pw-toggle" type="button" onclick="togglePw('e_user_pw2',this)">SHOW</button>
-                </div>
-
-                <!-- [7] Admin password with confirm -->
-                <label>ADMIN PASSWORD</label>
-                <div class="pw-wrap">
-                    <input id="e_admin_pw" type="password" placeholder="Admin password (min 8 chars)" autocapitalize="off" autocorrect="off" spellcheck="false">
-                    <button class="pw-toggle" type="button" onclick="togglePw('e_admin_pw',this)">SHOW</button>
-                </div>
-                <div class="pw-wrap">
-                    <input id="e_admin_pw2" type="password" placeholder="Confirm admin password" autocapitalize="off" autocorrect="off" spellcheck="false">
-                    <button class="pw-toggle" type="button" onclick="togglePw('e_admin_pw2',this)">SHOW</button>
-                </div>
-                <!-- [7] Password warning -->
-                <div style="font-size:.65em;color:#ff6600;margin-top:4px;line-height:1.5">&#9888; If both passwords are lost, vault recovery is not possible. Use at least 8 characters each.</div>
             </div>
         </div>
+
         <div id="e_preview" style="font-size:.72em;color:var(--txt);margin-top:8px;padding:6px;border:1px solid #111;background:#030303;display:none"></div>
-        <button id="lockBtn" disabled onclick="createEscrowConfirm()" style="margin-top:8px">CONNECT WALLET FIRST</button>
+        <button id="lockBtn" disabled onclick="createEscrowConfirm()" class="lock-btn-big">&#128274; CONNECT WALLET FIRST</button>
 
         <!-- [3] Create receipt -->
         <div id="create_receipt" class="hidden"></div>
@@ -855,6 +910,13 @@
             <input type="file" id="importFile" accept=".json" onchange="importEscrows(event)" style="display:none">
             <button onclick="refreshDashboard()" style="font-size:.7em;padding:5px;background:#111;border-color:#333;color:#666;flex:1">REFRESH</button>
         </div>
+        <!-- Restore-from-chain: rebuilds dashboard cards by scanning the
+             primary's tx history for escrow memos. Useful when switching
+             devices or after clearing browser data. Restored records are
+             read-only (no encrypted seed) until the user imports their
+             original JSON or rebuilds with full claim access. -->
+        <button onclick="restoreFromChain()" id="restore_chain_btn" style="font-size:.72em;padding:8px;margin-top:6px;width:100%;background:#001220;border:1px solid var(--cyan);color:var(--cyan);letter-spacing:1px">&#128260; RESTORE DASHBOARD FROM PRIMARY WALLET (ON-CHAIN)</button>
+        <div id="restore_chain_status" class="hidden" style="font-size:.7em;margin-top:6px;padding:8px;border:1px solid #033842;background:#010c10;color:#88bbcc;line-height:1.55;white-space:pre-wrap"></div>
         <!-- [8] Import summary -->
         <div id="import_summary" class="hidden" style="font-size:.72em;color:var(--txt);margin-top:6px;padding:6px;border:1px solid #222;background:#030303"></div>
     </div>
@@ -1430,16 +1492,20 @@ function tokenIcon(issuer, currencyName, size) {
     var cls = 'tok-ic' + (size === 'lg' ? ' tok-ic-lg' : '');
     // Defense in depth: even though hexToCurrency strips HTML-significant
     // bytes upstream, force the fallback initial through a hard whitelist
-    // here too. The initial gets injected into an inline JS string inside
-    // an onerror= attribute (escaped-quotes nest deep) so a stray quote
-    // would be catastrophic. Whitelist alphanumerics + a few token-name
-    // symbols and pad short results.
+    // here too.
     var rawInitial = (currencyName || '??').slice(0, 2).toUpperCase();
     var initial = rawInitial.replace(/[^A-Z0-9_+\-.*$]/g, '');
     if (initial.length < 1) initial = '??';
-    // On error, swap the <img> with a styled letter fallback in the same slot
+    // Build the onerror handler. The inline JS contains nested quotes
+    // (single quotes around the outerHTML target string, double quotes
+    // around its class attribute). To keep the HTML attribute parser
+    // from breaking on the first inner double-quote (which produced the
+    // visible ';"> garbage in earlier renders), encode all inner quotes
+    // as HTML entities. The browser decodes them BEFORE evaluating the
+    // attribute as JS, so the JS sees proper quotes:
+    //   this.outerHTML='<span class="tok-ic tok-ic-fallback">GR</span>';
     var fallback = 'this.onerror=null;' +
-        'this.outerHTML=\'<span class=\"' + cls + ' tok-ic-fallback\">' + initial + '</span>\';';
+        'this.outerHTML=&#39;<span class=&quot;' + cls + ' tok-ic-fallback&quot;>' + initial + '</span>&#39;;';
     return '<img src="' + url + '" class="' + cls + '" alt="" loading="lazy" onerror="' + fallback + '">';
 }
 function uuid() { return 'xxxx-xxxx'.replace(/x/g, function() { return (Math.random() * 16 | 0).toString(16); }); }
@@ -1609,7 +1675,7 @@ function switchNet(el, net) {
         document.getElementById('e_token_select').innerHTML = '<option value="">-- Connect wallet to load tokens --</option>';
         document.getElementById('e_token_info').innerHTML = '';
         document.getElementById('lockBtn').disabled = true;
-        document.getElementById('lockBtn').textContent = 'CONNECT WALLET FIRST';
+        document.getElementById('lockBtn').textContent = '\uD83D\uDD12 CONNECT WALLET FIRST';
         document.getElementById('saveWalletBtn').classList.add('hidden');
         lg('Switched to ' + net.toUpperCase(), 'inf');
     }
@@ -2037,7 +2103,7 @@ async function authWallet() {
         lg('Wallet: ' + truncAddr(wallet.address), 'inf');
         await refreshWallet();
         document.getElementById('lockBtn').disabled = false;
-        document.getElementById('lockBtn').textContent = 'EXECUTE ESCROW LOCK';
+        document.getElementById('lockBtn').textContent = '\uD83D\uDD12 LOCK TOKENS';
         document.getElementById('lockBtn').style.background = 'var(--neon)';
         document.getElementById('lockBtn').style.color = '#000';
         populateSelects(); populateWdSelect();
@@ -3788,10 +3854,20 @@ async function waitForAccountValidated(c, address, maxMs) {
 async function subWalletAutofill(c, sub, txjson, opts) {
     opts = opts || {};
     var ledgerBuffer = (typeof opts.ledgerBuffer === 'number') ? opts.ledgerBuffer : 100;
-    var maxWaitMs   = (typeof opts.maxWaitMs   === 'number') ? opts.maxWaitMs   : 60000;
 
-    // 1) Sub's account_data via the retry-tolerant validated-ledger path.
-    var acctData = await waitForAccountValidated(c, sub.address, maxWaitMs);
+    // 1) Sub's account_data. By the time this runs in the lock pipeline,
+    //    the sub-wallet has been activated by the fund Payment AND a
+    //    CheckCreate has successfully landed against it as destination —
+    //    both of those would have failed if the sub didn't exist. So we
+    //    don't need the patient 60-second waitForAccountValidated loop
+    //    here; that pre-CheckCreate gate already ran. A normal read with
+    //    requestWithRetry's built-in node failover is sufficient and
+    //    significantly faster on degraded clusters.
+    var acctResp = await requestWithRetry(
+        { command: 'account_info', account: sub.address, ledger_index: 'validated' },
+        { attempts: 5, timeout: 8000, label: 'subAutofill account_info ' + sub.address.slice(0,8) }
+    );
+    var acctData = acctResp.result.account_data;
 
     // 2) Current validated ledger index for LastLedgerSequence ceiling.
     //    Wrapped in requestWithRetry to survive cluster node hangs — same
@@ -3989,9 +4065,10 @@ function renderDashboard() {
             tokenIcon(e.issuer, hexToCurrency(e.currencyHex), 'lg') +
             '<div class="amt" style="flex:1">' + e.amount + ' ' + hexToCurrency(e.currencyHex) + '</div></div>' +
             '<div class="cd">' + countdown + '</div>' +
-            '<div style="font-size:.65em;color:var(--txt)">Vault: ' + truncAddr(e.subAddress) + ' | Net: ' + (e.network || '').toUpperCase() + '</div>' +
+            '<div style="font-size:.65em;color:var(--txt)">Vault: ' + truncAddr(e.subAddress) + ' | Net: ' + (e.network || '').toUpperCase() + (e.restored ? ' | <span style="color:var(--cyan)">RESTORED FROM CHAIN</span>' : '') + '</div>' +
             '<div style="font-size:.65em;color:var(--txt)">Created: ' + new Date(e.createdAt).toLocaleDateString() + ' | Unlock: ' + new Date(e.unlockDate).toLocaleString() + '</div>' +
             '<span class="st ' + stClass + '">' + stText + '</span>' +
+            (e.restored ? '<span class="st" style="background:#011215;color:var(--cyan);border:1px solid var(--cyan);margin-left:4px">READ-ONLY</span>' : '') +
             '<div style="font-size:.55em;color:var(--cyan);margin-top:4px">TAP FOR LIVE VAULT STATUS</div>' +
             '</div>';
     });
@@ -4040,6 +4117,19 @@ function populateSelects() {
 
     escrows.forEach(function(e) {
         var rs = resolveStatus(e);
+        // Restored records (rebuilt from on-chain memos) have no encrypted
+        // seed, so they cannot be claimed via the password flow. Show them
+        // as disabled with a clear "no seed" hint so the user knows why.
+        if (e.restored && (rs === 'ready_to_claim' || rs === 'locked')) {
+            var label = e.amount + ' ' + hexToCurrency(e.currencyHex) + ' [' + truncAddr(e.subAddress) + '] — ⓘ RESTORED, NO SEED (use [05] with raw seed)';
+            var opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = label;
+            opt.disabled = true;
+            opt.style.color = '#888';
+            claimSel.appendChild(opt);
+            return;
+        }
         if (rs === 'ready_to_claim') {
             var label = e.amount + ' ' + hexToCurrency(e.currencyHex) + ' [' + truncAddr(e.subAddress) + '] — ✓ READY';
             var opt = document.createElement('option');
@@ -4162,6 +4252,277 @@ function refreshDashboard() {
     renderDashboard();
     populateSelects(); populateWdSelect();
     lg('Dashboard refreshed.', 'inf');
+}
+
+// ════════════════════════════════════════════════════════════════════
+//   RESTORE DASHBOARD FROM ON-CHAIN HISTORY
+// ════════════════════════════════════════════════════════════════════
+// Rebuilds the dashboard by scanning the primary wallet's tx history
+// for escrow memos. Lets a user switch devices, clear browser data,
+// or recover from corrupted local storage and still see every escrow
+// they ever created.
+//
+// Restored records are READ-ONLY for claim purposes — they have no
+// encrypted seed (the seed lives only in the encrypted localStorage
+// blob from the original creating browser). The user can see what's
+// locked, when it unlocks, the vault address, and the on-chain status,
+// but to actually claim they still need to either:
+//   (a) import their original exported escrows JSON, or
+//   (b) re-supply the sub-wallet seed manually for individual claims
+//
+// What the chain HAS that we use:
+//   • Memo on each lock tx: token, amount, duration, unlock UTC, vault
+//   • CheckCreate's SendMax: currency hex + issuer
+//   • Tx timestamps for createdAt
+//   • account_info on each sub: lets us infer claim/delete status
+//
+// What the chain DOES NOT have:
+//   • The encrypted sub-wallet seed (needs export/import or PENDING_KEY)
+//   • The user's original passwords (needed to decrypt the seed)
+
+// Decode an XRPL hex memo back to UTF-8.
+function _hexToUtf8(hex) {
+    if (!hex) return '';
+    var s = '';
+    try {
+        for (var i = 0; i < hex.length; i += 2) {
+            s += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+        }
+        return decodeURIComponent(escape(s));  // handle multibyte UTF-8
+    } catch(e) { return s; }
+}
+
+// Parse one of our standard escrow lock memos. Returns null if the memo
+// is not in our format. Memo shape:
+//   XRPMAN ESCROW LOCK | {amount} {token} | locked {dur} | unlocks {YYYY-MM-DD HH:MM UTC} | vault {addr} | XRPMAN Precision Escrow Terminal v{N}
+function _parseEscrowMemo(memoText) {
+    if (!memoText || memoText.indexOf('XRPMAN ESCROW LOCK') !== 0) return null;
+    var parts = memoText.split('|').map(function(p) { return p.trim(); });
+    if (parts.length < 5) return null;
+    // parts[0] = "XRPMAN ESCROW LOCK"
+    // parts[1] = "1 $XRPMAN" (amount + token name)
+    // parts[2] = "locked 4m" or "locked 30 days"
+    // parts[3] = "unlocks 2026-05-04 01:24 UTC"
+    // parts[4] = "vault rXXXXX..."
+    // parts[5] = "XRPMAN Precision Escrow Terminal v3.0.1"
+    var out = { raw: memoText };
+
+    var amtMatch = parts[1].match(/^(\S+)\s+(.+)$/);
+    if (amtMatch) {
+        out.amount = amtMatch[1];
+        out.tokenName = amtMatch[2];
+    }
+
+    var unlockMatch = parts[3].match(/unlocks\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+UTC/i);
+    if (unlockMatch) {
+        out.unlockISO = unlockMatch[1] + 'T' + unlockMatch[2] + ':00Z';
+        out.unlockMs = Date.parse(out.unlockISO);
+    }
+
+    var vaultMatch = parts[4].match(/vault\s+(r[1-9A-HJ-NP-Za-km-z]{24,34})/);
+    if (vaultMatch) out.vaultAddress = vaultMatch[1];
+
+    // Need at minimum: amount, tokenName, unlockMs, vaultAddress
+    if (!out.amount || !out.tokenName || !out.unlockMs || !out.vaultAddress) return null;
+    return out;
+}
+
+// Probe a sub-wallet's current on-chain state. Determines whether the
+// vault is locked / unlocked-but-unclaimed / claimed-but-not-deleted /
+// deleted. Used to set the status of each restored record.
+async function _probeSubWalletStatus(c, subAddress, currencyHex, issuer) {
+    try {
+        var info = await requestWithRetry(
+            { command: 'account_info', account: subAddress, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'restore-probe info ' + subAddress.slice(0,8) }
+        );
+        // Account exists. Check trustlines to see if tokens are still there.
+        var lines = await requestWithRetry(
+            { command: 'account_lines', account: subAddress, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'restore-probe lines ' + subAddress.slice(0,8) }
+        );
+        var trustlines = (lines.result && lines.result.lines) || [];
+        var match = trustlines.find(function(t) {
+            return t.currency === currencyHex && t.account === issuer;
+        });
+        if (match && parseFloat(match.balance) > 0) {
+            return { state: 'locked', xrp: parseInt(info.result.account_data.Balance, 10) / 1000000 };
+        }
+        // Account exists but no token balance — tokens were claimed, XRP not yet recovered
+        return { state: 'swept_ready_for_delete', xrp: parseInt(info.result.account_data.Balance, 10) / 1000000 };
+    } catch (e) {
+        if (/actNotFound|Account not found/i.test(e.message || '')) {
+            // Sub-wallet was deleted. Both tokens and XRP have been recovered.
+            return { state: 'deleted', xrp: 0 };
+        }
+        // Network error — leave as unknown
+        return { state: 'unknown', error: e.message };
+    }
+}
+
+async function restoreFromChain() {
+    var btn = document.getElementById('restore_chain_btn');
+    var statusEl = document.getElementById('restore_chain_status');
+    if (!wallet || !wallet.address) {
+        if (statusEl) {
+            statusEl.classList.remove('hidden');
+            statusEl.textContent = 'Connect a primary wallet first.';
+        }
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '\u23F3 SCANNING ON-CHAIN HISTORY...';
+    statusEl.classList.remove('hidden');
+    statusEl.textContent = 'Connecting to ledger...';
+
+    try {
+        var c = await getClient();
+
+        // Step 1: paginate account_tx until we have enough history or hit
+        // a sane cap. Each batch is up to 200 tx; 5 batches = 1000 tx
+        // which is enough history for any normal user.
+        var allTxs = [];
+        var marker = undefined;
+        var batches = 0;
+        var MAX_BATCHES = 5;
+        while (batches < MAX_BATCHES) {
+            statusEl.textContent = 'Loading tx history... batch ' + (batches + 1) + '/' + MAX_BATCHES + ' (' + allTxs.length + ' tx so far)';
+            var req = {
+                command: 'account_tx',
+                account: wallet.address,
+                ledger_index_min: -1,
+                ledger_index_max: -1,
+                limit: 200,
+                forward: false
+            };
+            if (marker) req.marker = marker;
+            var resp = await requestWithRetry(req, { attempts: 3, timeout: 12000, label: 'restore account_tx batch ' + (batches+1) });
+            var txs = (resp.result && resp.result.transactions) || [];
+            allTxs = allTxs.concat(txs);
+            marker = resp.result && resp.result.marker;
+            batches++;
+            if (!marker || txs.length === 0) break;
+        }
+        lg('Restore scan: pulled ' + allTxs.length + ' tx from primary history.', 'inf');
+
+        // Step 2: filter to our CheckCreate locks (signed by primary, with
+        // the XRPMAN ESCROW LOCK memo prefix).
+        var locks = [];
+        allTxs.forEach(function(t) {
+            var tx = t.tx_json || t.tx || t.transaction || {};
+            var meta = t.meta || {};
+            if (tx.TransactionType !== 'CheckCreate') return;
+            if (tx.Account !== wallet.address) return;
+            if ((meta.TransactionResult || '') !== 'tesSUCCESS') return;
+            // Decode memos
+            var memos = tx.Memos || [];
+            for (var i = 0; i < memos.length; i++) {
+                var memo = memos[i].Memo || {};
+                if (!memo.MemoData) continue;
+                var text = _hexToUtf8(memo.MemoData);
+                var parsed = _parseEscrowMemo(text);
+                if (parsed) {
+                    parsed.txHash = t.hash || tx.hash;
+                    parsed.createdAt = (tx.date != null) ? (tx.date + 946684800) * 1000 : Date.now();
+                    // SendMax has the actual currency hex + issuer
+                    var sm = tx.SendMax;
+                    if (sm && typeof sm === 'object') {
+                        parsed.currencyHex = sm.currency;
+                        parsed.issuer = sm.issuer;
+                    }
+                    locks.push(parsed);
+                    break;
+                }
+            }
+        });
+
+        if (locks.length === 0) {
+            statusEl.textContent = 'No XRPMAN escrow locks found in last ' + allTxs.length + ' tx of ' + truncAddr(wallet.address) + '.';
+            btn.disabled = false;
+            btn.innerHTML = '\uD83D\uDD04 RESTORE DASHBOARD FROM PRIMARY WALLET (ON-CHAIN)';
+            return;
+        }
+
+        statusEl.textContent = 'Found ' + locks.length + ' escrow lock(s) in chain history.\nProbing each sub-wallet for current status...';
+        lg('Restore scan: matched ' + locks.length + ' XRPMAN escrow locks.', 'succ');
+
+        // Step 3: probe each sub-wallet to determine current status.
+        for (var j = 0; j < locks.length; j++) {
+            statusEl.textContent = 'Probing sub-wallets... ' + (j + 1) + '/' + locks.length + ' (' + locks[j].vaultAddress.slice(0,8) + '...)';
+            locks[j].probe = await _probeSubWalletStatus(c, locks[j].vaultAddress, locks[j].currencyHex, locks[j].issuer);
+        }
+
+        // Step 4: build dashboard records, skip any whose subAddress already
+        // exists in localStorage (avoid clobbering records that have seeds).
+        var existing = getEscrows();
+        var existingByAddr = {};
+        existing.forEach(function(e) { if (e.subAddress) existingByAddr[e.subAddress] = e; });
+
+        var newCount = 0, skipCount = 0;
+        var addedSummary = [];
+        locks.forEach(function(L) {
+            if (existingByAddr[L.vaultAddress]) { skipCount++; return; }
+            var statusVal = 'locked';
+            if (L.probe) {
+                if (L.probe.state === 'deleted') statusVal = 'deleted';
+                else if (L.probe.state === 'swept_ready_for_delete') statusVal = 'swept_ready_for_delete';
+                else if (L.probe.state === 'locked') statusVal = (L.unlockMs <= Date.now()) ? 'ready_to_claim' : 'locked';
+            }
+            var unlockSec = Math.floor(L.unlockMs / 1000);
+            // XRPL ripple-epoch close_time: subtract 946684800
+            var unlockLedgerTime = unlockSec - 946684800;
+
+            var rec = {
+                id: uuid(),
+                subAddress: L.vaultAddress,
+                primaryAddress: wallet.address,
+                issuer: L.issuer || '',
+                currencyInput: L.tokenName,
+                currencyHex: L.currencyHex || '',
+                amount: L.amount,
+                // No encrypted seed — restored records are read-only for claim
+                salt: null, iv: null, ct: null, argon2: null,
+                createdAt: L.createdAt,
+                unlockDate: L.unlockMs,
+                unlockLedgerTime: unlockLedgerTime,
+                status: statusVal,
+                network: NET,
+                txHashes: { fund: '', checkCreate: L.txHash || '', checkCash: '' },
+                restored: true,                         // marker — no seed available
+                restoredFromTxHash: L.txHash || '',
+                restoredAt: Date.now()
+            };
+            existing.push(rec);
+            newCount++;
+            addedSummary.push('  ✓ ' + rec.amount + ' ' + rec.currencyInput + ' [' + statusVal + '] vault ' + truncAddr(rec.subAddress));
+        });
+
+        localStorage.setItem(STORE_KEY, JSON.stringify(existing));
+        renderDashboard();
+        populateSelects(); populateWdSelect();
+
+        var summary = 'RESTORE COMPLETE\n' +
+                      '════════════════════════\n' +
+                      '  scanned: ' + allTxs.length + ' tx\n' +
+                      '  found:   ' + locks.length + ' escrow locks\n' +
+                      '  added:   ' + newCount + ' new record(s)\n' +
+                      '  skipped: ' + skipCount + ' (already in dashboard)\n';
+        if (addedSummary.length > 0) {
+            summary += '\nAdded:\n' + addedSummary.join('\n');
+        }
+        if (newCount > 0) {
+            summary += '\n\n⚠ Restored records are READ-ONLY. They show the lock state but you cannot claim without the original encrypted seed (import an exported JSON, or re-paste the sub-wallet seed in [05] EMERGENCY DELETE if you have it).';
+        }
+        statusEl.textContent = summary;
+        lg('Restore complete: +' + newCount + ' new, ' + skipCount + ' already known.', 'succ');
+    } catch (e) {
+        statusEl.textContent = 'Restore failed: ' + (e.message || e);
+        lg('Restore from chain failed: ' + (e.message || e), 'err');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '\uD83D\uDD04 RESTORE DASHBOARD FROM PRIMARY WALLET (ON-CHAIN)';
+    }
 }
 
 // ============================================================
@@ -4918,14 +5279,27 @@ async function clearAllBlockers(c, sub, destinationAddress) {
                 // Now close the trust line. Setting LimitAmount value:'0' with
                 // zero balance removes the RippleState entry on next ledger close.
                 lg('  Removing trustline for ' + currencyLabel + '...', 'inf');
-                await signAndSubmitSubTx(c, sub, {
-                    TransactionType: 'TrustSet',
-                    Account: sub.address,
-                    LimitAmount: { currency: currency, issuer: counterparty, value: '0' },
-                    Flags: 0x00020000  // tfClearNoRipple — best-effort flag clear
-                }, 'TrustSet limit:0');
-                cleared++;
-                lg('  ✓ Trustline removed.', 'succ');
+                try {
+                    await signAndSubmitSubTx(c, sub, {
+                        TransactionType: 'TrustSet',
+                        Account: sub.address,
+                        LimitAmount: { currency: currency, issuer: counterparty, value: '0' },
+                        Flags: 0x00020000  // tfClearNoRipple — best-effort flag clear
+                    }, 'TrustSet limit:0');
+                    cleared++;
+                    lg('  ✓ Trustline removed.', 'succ');
+                } catch (tsErr) {
+                    // tecNO_LINE_REDUNDANT means the trustline is already in
+                    // the requested state (limit 0, no balance, flags fine).
+                    // The Payment-back-to-primary above already implicitly
+                    // closed it on the same ledger close. Treat as success.
+                    if (/tecNO_LINE_REDUNDANT/i.test(tsErr.message || '')) {
+                        cleared++;
+                        lg('  ✓ Trustline already removed (closed on previous Payment).', 'succ');
+                    } else {
+                        throw tsErr;
+                    }
+                }
 
             } else if (obj.LedgerEntryType === 'Offer') {
                 lg('  Cancelling Offer #' + obj.Sequence + '...', 'inf');
@@ -6785,7 +7159,7 @@ async function connectAsReadOnly(address) {
     var lockBtn = document.getElementById('lockBtn');
     if (lockBtn) {
         lockBtn.disabled = false;
-        lockBtn.textContent = 'EXECUTE ESCROW LOCK (XAMAN)';
+        lockBtn.textContent = '\uD83D\uDD12 LOCK TOKENS WITH XAMAN';
         lockBtn.style.background = 'var(--cyan)';
         lockBtn.style.color = '#000';
     }
