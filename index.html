@@ -610,6 +610,10 @@
     <div class="spin"></div>
     <div id="overlay-txt">PROCESSING...</div>
     <div id="overlay-elapsed" style="font-family:'Share Tech Mono',monospace;font-size:.7em;color:#88aa88;margin-top:8px;letter-spacing:1px"></div>
+    <div id="overlay-xrpman-wrap" style="display:none;margin-top:14px;padding:10px 16px;border:1px solid #00ff00;background:rgba(0,30,0,.4);max-width:380px;text-align:center;line-height:1.5">
+        <div style="font-family:'Orbitron',monospace;font-size:.6em;color:#00aa44;letter-spacing:3px;margin-bottom:4px">&#x1F680; XRPMAN</div>
+        <div id="overlay-xrpman-line" style="font-family:'Share Tech Mono',monospace;font-size:.78em;color:#00ff00;letter-spacing:.5px;min-height:1.2em"></div>
+    </div>
     <div id="overlay-stall" style="display:none;margin-top:18px;padding:12px;border:1px solid #ff8844;background:rgba(40,16,0,.6);max-width:340px;text-align:center">
         <div style="font-family:'Orbitron',monospace;color:#ff8844;font-size:.75em;letter-spacing:2px;margin-bottom:8px">&#9888; STALLED</div>
         <div id="overlay-stall-msg" style="font-size:.7em;color:#ddbb99;line-height:1.5;text-transform:none">No activity for 45s. The network node may be hung. Failover should kick in shortly &mdash; if not, abort to recover.</div>
@@ -1245,6 +1249,11 @@ function showLoad(m) {
     if (elapsed) elapsed.textContent = '0s elapsed';
     if (abortBtn) abortBtn.style.display = 'none';      // appears at 90s OR on stall
     if (stall) stall.style.display = 'none';            // appears after 25s of no log activity
+    // Reset XRPMAN narration block — hidden until xrpmanNarrate fires.
+    var xWrap = document.getElementById('overlay-xrpman-wrap');
+    var xLine = document.getElementById('overlay-xrpman-line');
+    if (xWrap) xWrap.style.display = 'none';
+    if (xLine) xLine.textContent = '';
     if (ov) ov.style.display = 'flex';
 
     _overlayWatchdog.startedAt = Date.now();
@@ -5181,16 +5190,31 @@ var XRPMAN_REACTIONS = {
 // Speak a specific lock-pipeline reaction. Resets the assistant rotation
 // timer so the same line stays visible until the next narration step
 // (instead of being replaced by an idle-pool line mid-flow).
+//
+// IMPORTANT: this also paints the line inside the loading overlay, which
+// covers the full screen at z-index 999 and would otherwise hide the
+// normal assistant strip during the 60–90s lock pipeline. The overlay
+// narration block is shown automatically on first narrate call.
 function xrpmanNarrate(key) {
     var lines = XRPMAN_REACTIONS[key];
     if (!lines || lines.length === 0) return;
     var pick = lines[Math.floor(Math.random() * lines.length)];
     if (!pick) return;
     try {
+        // Write to the always-visible page strip (where it'll be visible
+        // before showLoad() fires and after hideLoad() exits).
         showXrpmanLine(pick);
-        // Suppress the idle rotator while the lock flow is talking — we
-        // don't want "Tip: testnet first" appearing mid-Xaman-approval.
+        // Suppress idle rotator while lock flow is talking.
         if (_xrpmanTimer) { clearInterval(_xrpmanTimer); _xrpmanTimer = null; }
+
+        // Also paint the line on the overlay itself so the user sees it
+        // through the loading screen. Reveal the wrapper if hidden.
+        var wrap = document.getElementById('overlay-xrpman-wrap');
+        var lineEl = document.getElementById('overlay-xrpman-line');
+        if (wrap && lineEl) {
+            lineEl.textContent = pick;
+            wrap.style.display = 'block';
+        }
     } catch(_) {}
 }
 
