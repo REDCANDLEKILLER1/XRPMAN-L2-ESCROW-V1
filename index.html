@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XRPMAN | Precision Escrow Terminal v2.0</title>
+    <title>XRPMAN | Precision Escrow Terminal v3.0.1</title>
     <!-- Speed: establish connections early, fetch fonts in parallel with CSS -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -624,7 +624,7 @@
 <div class="studio-banner logo-tap" id="studio-banner" onclick="devLogoTap()">XRPMAN STUDIOS PRESENTS</div>
 <div class="hdr">
     <h1>PRECISION ESCROW TERMINAL<span id="gate-badge" class="gate-badge gate-free">FREE ACCESS</span></h1>
-    <div class="sub">SELF-CUSTODY TOKEN VAULT &mdash; SUB-WALLET ARCHITECTURE &mdash; v3.0</div>
+    <div class="sub">SELF-CUSTODY TOKEN VAULT &mdash; SUB-WALLET ARCHITECTURE &mdash; v3.0.1</div>
     <div class="ntog" id="netTog">
         <button onclick="switchNet(this,'test')">TESTNET</button>
         <button class="on" onclick="switchNet(this,'main')">MAINNET</button>
@@ -979,8 +979,16 @@ function copyToClipboard(text) {
 // ============================================================
 var NETS = {
     test: ["wss://s.altnet.rippletest.net:51233"],
-    main: ["wss://xrplcluster.com","wss://s1.ripple.com","wss://s2.ripple.com"]
+    main: [
+        "wss://xrplcluster.com",     // InFTF — Xaman's default submission cluster (try first for tx affinity)
+        "wss://xrpl.ws",             // InFTF alias — different DNS/load-balancer entrypoint
+        "wss://xrpl.link",           // XRPL Labs fallback (used by xrpl-client default rotation)
+        "wss://s1.ripple.com",       // Ripple — general-purpose cluster
+        "wss://s2.ripple.com",       // Ripple — full-history cluster
+        "wss://honeycluster.io"      // Honeycluster — fully independent operator (Clio + full history)
+    ]
 };
+var _currentNodeIdx = 0;  // round-robin pointer for failover rotation
 var NET = "main";
 
 // ════════════════════════════════════════════════════════════════════
@@ -1549,18 +1557,26 @@ function saveWalletJson() {
 async function getClient() {
     if (client && client.isConnected()) return client;
     var nodes = NETS[NET];
-    for (var i = 0; i < nodes.length; i++) {
+    // Try each node in rotation, starting from the current index. This way,
+    // if one node times out and triggers a reconnect (which advances the
+    // index), getClient() picks a different node instead of the broken one.
+    for (var attempt = 0; attempt < nodes.length; attempt++) {
+        var idx = (_currentNodeIdx + attempt) % nodes.length;
+        var url = nodes[idx];
         try {
-            lg('Connecting to ' + nodes[i] + '...');
-            var c = new xrpl.Client(nodes[i], { timeout: 25000 });
+            lg('Connecting to ' + url + '...', 'inf');
+            var c = new xrpl.Client(url, { timeout: 25000 });
             await c.connect();
-            lg('Connected.', 'succ');
+            lg('Connected: ' + url, 'succ');
             client = c;
+            _currentNodeIdx = idx;  // remember which node we're on
             c.on('disconnected', function() { client = null; });
             return c;
-        } catch (e) { lg('Node failed: ' + e.message, 'err'); }
+        } catch (e) {
+            lg('Node ' + url + ' failed: ' + e.message, 'err');
+        }
     }
-    throw new Error('All nodes failed. Check internet.');
+    throw new Error('All ' + nodes.length + ' XRPL nodes failed. Check your internet connection.');
 }
 
 // ============================================================
@@ -1583,7 +1599,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
 
         var acctInfo;
         try {
-            acctInfo = await c.request({ command: 'account_info', account: sub.address, ledger_index: 'validated' });
+            acctInfo = await requestWithRetry(
+                { command: 'account_info', account: sub.address, ledger_index: 'validated' },
+                { attempts: 5, timeout: 8000, label: 'delete-probe ' + sub.address.slice(0,8) }
+            );
         } catch(gone) {
             if (gone.message && (gone.message.includes('actNotFound') || gone.message.includes('Account not found'))) {
                 // Already gone — mark deleted
@@ -1596,7 +1615,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
         var ownerCount = acctInfo.result.account_data.OwnerCount || 0;
         var bal = parseFloat(xrpl.dropsToXrp(acctInfo.result.account_data.Balance));
         var acctSeq = acctInfo.result.account_data.Sequence;
-        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
+        var ledgerResp = await requestWithRetry(
+            { command: 'ledger', ledger_index: 'validated' },
+            { attempts: 5, timeout: 8000, label: 'delete-ledger' }
+        );
         var currentLedger = ledgerResp.result.ledger_index;
         var gap = currentLedger - acctSeq;
 
@@ -1608,11 +1630,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
         var BLOCKING_TYPES = { Check: 1, Escrow: 1, NFTokenPage: 1, PayChannel: 1, RippleState: 1 };
         var blockers = [];
         try {
-            var objsResp = await c.request({
-                command: 'account_objects',
-                account: sub.address,
-                ledger_index: 'validated'
-            });
+            var objsResp = await requestWithRetry(
+                { command: 'account_objects', account: sub.address, ledger_index: 'validated' },
+                { attempts: 3, timeout: 8000, label: 'delete-objects ' + sub.address.slice(0,8) }
+            );
             var allObjs = (objsResp.result && objsResp.result.account_objects) || [];
             for (var bi = 0; bi < allObjs.length; bi++) {
                 if (BLOCKING_TYPES[allObjs[bi].LedgerEntryType]) blockers.push(allObjs[bi]);
@@ -1653,10 +1674,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
         if (client) { try { client.disconnect(); } catch(x) {} client = null; }
         c = await getClient();
 
-        var delTx = await c.autofill({
+        var delTx = await subWalletAutofill(c, sub, {
             TransactionType: 'AccountDelete', Account: sub.address,
             Destination: destAddress, Fee: '200000'
-        });
+        }, { ledgerBuffer: 100 });
         delTx.Fee = '200000';
         delTx.LastLedgerSequence = currentLedger + 100;
 
@@ -1673,7 +1694,10 @@ async function tryDeleteNow(sub, destAddress, escrowId) {
             for (var p = 0; p < 20; p++) {
                 await new Promise(function(r) { setTimeout(r, 3000); });
                 try {
-                    await c.request({ command: 'account_info', account: sub.address, ledger_index: 'validated' });
+                    await requestWithRetry(
+                        { command: 'account_info', account: sub.address, ledger_index: 'validated' },
+                        { attempts: 1, timeout: 6000, label: 'delete-poll ' + sub.address.slice(0,8) }
+                    );
                 } catch(gone) {
                     if (gone.message && (gone.message.includes('actNotFound') || gone.message.includes('Account not found'))) {
                         lg('WALLET DELETED! ' + bal.toFixed(2) + ' XRP returned (minus 0.2 burn).', 'succ');
@@ -1739,10 +1763,15 @@ function startAutoDeleteHelper(sub, destAddress, escrowId) {
             } else if (result === 'too_soon') {
                 // Still waiting — check gap for progress display
                 try {
-                    var c = await getClient();
-                    var info = await c.request({ command: 'account_info', account: autoDeleteSub.address, ledger_index: 'validated' });
+                    var info = await requestWithRetry(
+                        { command: 'account_info', account: autoDeleteSub.address, ledger_index: 'validated' },
+                        { attempts: 2, timeout: 6000, label: 'auto-delete progress' }
+                    );
                     var seq = info.result.account_data.Sequence;
-                    var lr = await c.request({ command: 'ledger', ledger_index: 'validated' });
+                    var lr = await requestWithRetry(
+                        { command: 'ledger', ledger_index: 'validated' },
+                        { attempts: 2, timeout: 6000, label: 'auto-delete ledger' }
+                    );
                     var gap = lr.result.ledger_index - seq;
                     lg('  Gap: ' + gap + '/256 — ~' + Math.ceil((256 - gap) * 3.5 / 60) + ' min remaining', '');
                 } catch(x) {}
@@ -1989,6 +2018,29 @@ async function submitAsPrimary(c, txjson, label, opts) {
     //  caller can fall back to account_objects if needed.
     // ──────────────────────────────────────────────────────────────────
     if (dispatchOk) {
+        // FAST PATH for CheckCreate (auditor reorder): derive CheckID directly
+        // from the signed blob's Sequence. Xaman has finalized signing — the
+        // Sequence is locked in — and CheckID is a pure function of (Account,
+        // Sequence). No metadata wait, no account_objects retry, no node-lag
+        // race. This collapses the post-CheckCreate latency from ~15s to ~0ms.
+        if (opts.verifyCheckCreated && result.hex) {
+            var seq = decodeSignedSequence(result.hex);
+            if (seq != null) {
+                try {
+                    var derivedID = await deriveCheckID(s.address, seq);
+                    lg(label + ' CheckID derived from signed Sequence (' + seq + '): ' + derivedID.slice(0,12) + '...', 'succ');
+                    return syntheticCheckSuccess(derivedID);
+                } catch (derivErr) {
+                    lg('CheckID derivation failed: ' + derivErr.message + ' — falling back to metadata fetch.', 'inf');
+                }
+            } else {
+                lg('Could not decode Sequence from signed blob — falling back to metadata fetch.', 'inf');
+            }
+        }
+
+        // SLOW PATH: metadata fetch loop. Used for the fund Payment (no
+        // verifyCheckCreated) or as fallback when derivation can't extract
+        // a Sequence (would indicate xrpl.js codec incompatibility).
         lg(label + ' confirmed by Xaman (' + result.dispatched + '). Fetching metadata...', 'inf');
         var metaDeadline = Date.now() + 15000; // 15s window for metadata
         while (Date.now() < metaDeadline) {
@@ -2011,30 +2063,11 @@ async function submitAsPrimary(c, txjson, label, opts) {
             }
         }
         // Xaman vouches for success even if our node hasn't caught up.
-        // Try Check probe one last time before returning empty meta.
+        // Try Check probe one last time before deciding the final outcome.
         var lateCheckID = await checkCreatedProbe();
         if (lateCheckID) {
             lg(label + ' confirmed via late Check probe. CheckID: ' + lateCheckID.slice(0,12) + '...', 'succ');
             return syntheticCheckSuccess(lateCheckID);
-        }
-
-        // AUDITOR PATCH #5: never return empty AffectedNodes for a CheckCreate
-        // without a CheckID. Try deterministic derivation from the signed
-        // Sequence — Xaman gave us the signed blob, which contains the exact
-        // Sequence the network will assign on inclusion. Combined with the
-        // sender AccountID and the Check namespace byte, that uniquely pins
-        // the CheckID without any network query.
-        if (opts.verifyCheckCreated && result.hex) {
-            var seq = decodeSignedSequence(result.hex);
-            if (seq != null) {
-                try {
-                    var derivedID = await deriveCheckID(s.address, seq);
-                    lg(label + ' CheckID derived from signed Sequence (' + seq + '): ' + derivedID.slice(0,12) + '...', 'succ');
-                    return syntheticCheckSuccess(derivedID);
-                } catch (derivErr) {
-                    lg('CheckID derivation failed: ' + derivErr.message, 'inf');
-                }
-            }
         }
 
         // CheckCreate that reached this point with no derivable ID is unsafe to
@@ -2183,8 +2216,17 @@ async function submitAsPrimary(c, txjson, label, opts) {
 
 async function refreshWallet(silent) {
     if (!wallet) return;
-    var c = await getClient();
-    var info = await c.request({ command: 'account_info', account: wallet.address, ledger_index: 'validated' });
+    var info;
+    try {
+        info = await requestWithRetry(
+            { command: 'account_info', account: wallet.address, ledger_index: 'validated' },
+            { attempts: 5, timeout: 8000, label: 'refresh ' + wallet.address.slice(0,8) }
+        );
+    } catch (e) {
+        document.getElementById('w_info').innerHTML = '<span class="warn">OFFLINE: ' + truncAddr(wallet.address) + ' — RPC unavailable</span>';
+        if (!silent) lg('Wallet refresh failed: ' + (e.message || e) + '. Showing cached state.', 'err');
+        return;
+    }
     walletBal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
     var ownerCount = info.result.account_data.OwnerCount || 0;
 
@@ -2205,7 +2247,10 @@ async function refreshWallet(silent) {
     walletTokens = [];
     var tokensHtml = '';
     try {
-        var lines = await c.request({ command: 'account_lines', account: wallet.address, ledger_index: 'validated' });
+        var lines = await requestWithRetry(
+            { command: 'account_lines', account: wallet.address, ledger_index: 'validated' },
+            { attempts: 5, timeout: 8000, label: 'account_lines ' + wallet.address.slice(0,8) }
+        );
         var allLines = lines.result.lines || [];
         if (!silent) lg('Found ' + allLines.length + ' trust line(s)', 'inf');
 
@@ -2269,11 +2314,13 @@ async function auditVaultStatus() {
     lg('Auditing ' + needCheck.length + ' vault(s) against ledger...', 'inf');
     var updated = 0;
     try {
-        var c = await getClient();
         for (var i = 0; i < needCheck.length; i++) {
             var e = needCheck[i];
             try {
-                await c.request({ command: 'account_info', account: e.subAddress, ledger_index: 'validated' });
+                await requestWithRetry(
+                    { command: 'account_info', account: e.subAddress, ledger_index: 'validated' },
+                    { attempts: 3, timeout: 8000, label: 'audit ' + e.subAddress.slice(0,8) }
+                );
                 // Account exists — leave status as-is
             } catch(err) {
                 if (err.message && (err.message.includes('actNotFound') || err.message.includes('Account not found'))) {
@@ -2355,6 +2402,25 @@ function getUnlockDate() {
     var cv = document.getElementById('e_custom_date').value;
     return cv ? new Date(cv) : null;
 }
+
+// Smart human-readable duration for the preview row and the
+// "lock not expired yet" claim error. Replaces the old
+// Math.ceil(ms/86400000) + ' days' that returned "1 days" for any
+// remaining time under 24 hours, including times in the past.
+function formatLockDuration(ms) {
+    if (ms <= 0) return null;  // caller decides how to render past/now
+    var totalSec = Math.floor(ms / 1000);
+    var days  = Math.floor(totalSec / 86400);
+    var hours = Math.floor((totalSec % 86400) / 3600);
+    var mins  = Math.floor((totalSec % 3600) / 60);
+    function pl(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+    if (days >= 7 || (days >= 1 && hours === 0)) return pl(days, 'day');
+    if (days >= 1)  return pl(days, 'day') + ', ' + pl(hours, 'hour');
+    if (hours >= 1) return mins === 0 ? pl(hours, 'hour') : pl(hours, 'hour') + ', ' + pl(mins, 'minute');
+    if (mins >= 1)  return pl(mins, 'minute');
+    return 'less than 1 minute';
+}
+
 function updatePreview() {
     var unlock = getUnlockDate();
     var pre = document.getElementById('e_preview');
@@ -2363,7 +2429,24 @@ function updatePreview() {
     var token = getSelectedToken();
     var name = token ? token.name : '?';
     pre.style.display = 'block';
-    pre.innerHTML = 'PREVIEW: Lock <span class="inf">' + amt + ' ' + name + '</span> until <span class="inf">' + unlock.toLocaleString() + '</span> (' + Math.ceil((unlock - Date.now()) / 86400000) + ' days)';
+
+    var msRemaining = unlock.getTime() - Date.now();
+    var durStr = formatLockDuration(msRemaining);
+
+    if (msRemaining <= 0) {
+        // Past date — block and warn instead of silently saying "0 days"
+        pre.innerHTML = '<span class="warn">&#9888; UNLOCK DATE IS IN THE PAST</span> &mdash; adjust the date before locking. ' +
+                        'Selected: <span class="inf">' + unlock.toLocaleString() + '</span>';
+    } else if (msRemaining < 5 * 60 * 1000) {
+        // Sub-5-minute locks are almost certainly user error (off-by-AM/PM, wrong day, etc.)
+        pre.innerHTML = '<span class="warn">&#9888; VERY SHORT LOCK</span> &mdash; ' +
+                        amt + ' ' + name + ' will unlock in <span class="warn">' + durStr + '</span> ' +
+                        '(' + unlock.toLocaleString() + '). Confirm this is intentional.';
+    } else {
+        pre.innerHTML = 'PREVIEW: Lock <span class="inf">' + amt + ' ' + name + '</span> ' +
+                        'until <span class="inf">' + unlock.toLocaleString() + '</span> ' +
+                        '(<span class="inf">' + durStr + '</span> from now)';
+    }
 }
 document.addEventListener('input', function(e) {
     if (['e_amount', 'e_custom_date', 'e_token_select'].includes(e.target.id)) updatePreview();
@@ -2493,6 +2576,79 @@ async function createEscrow() {
             throw new Error('Generated sub-wallet address collides with primary wallet. Retry.');
         }
 
+        // ════════════════════════════════════════════════════════════════
+        //   PRE-FLIGHT SEED RESCUE — runs BEFORE any network activity
+        // ════════════════════════════════════════════════════════════════
+        // This gate exists because of a fatal failure mode discovered in the
+        // wild: if the lock pipeline hangs forever (e.g. xrplcluster.com
+        // times out on submit) and the user force-quits the tab, the seed
+        // never surfaces. The recovery block at the bottom only fires on
+        // thrown errors, not on user-cancelled hangs.
+        //
+        // The fix: write the seed to a persistent storage key BEFORE we
+        // touch the network at all, AND show it in a confirm dialog the
+        // user must explicitly acknowledge. Even if the entire app crashes
+        // a millisecond from now, the seed survives in localStorage.
+        try {
+            // Backup #1: persistent localStorage stash, indexed by address.
+            // This survives tab close, crash, force-quit, OS restart.
+            var stash = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
+            stash[sub.address] = {
+                seed: sub.seed,
+                createdAt: Date.now(),
+                primary: wallet.address,
+                network: NET
+            };
+            localStorage.setItem('xrpman_subwallet_stash', JSON.stringify(stash));
+            lg('Seed saved to local stash (key: xrpman_subwallet_stash). Survives tab close.', 'inf');
+        } catch (stashErr) {
+            lg('WARNING: could not save seed to local stash: ' + stashErr.message, 'err');
+        }
+
+        // Backup #2: hand the user the seed RIGHT NOW with a hard
+        // confirmation gate. They must copy it to their password manager
+        // before the lock proceeds. If they cancel, we abort cleanly with
+        // no funds at risk (no fund payment has fired yet).
+        hideLoad();
+        var ack = confirm(
+            'SUB-WALLET CREATED — SAVE SEED FIRST\n\n' +
+            'Address:\n' + sub.address + '\n\n' +
+            'RECOVERY SEED (copy this NOW):\n' + sub.seed + '\n\n' +
+            '\u26a0 If anything goes wrong during the lock, this seed is the ONLY way to recover the 1.5 XRP and any tokens.\n\n' +
+            'Press OK to copy the seed to your clipboard and continue.\n' +
+            'Press CANCEL to abort the lock (no funds at risk yet).'
+        );
+
+        if (!ack) {
+            lg('User cancelled at seed pre-flight. No funds were sent. Sub-wallet discarded.', 'inf');
+            // Remove the unused stash entry — sub-wallet was never funded.
+            try {
+                var s = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
+                delete s[sub.address];
+                localStorage.setItem('xrpman_subwallet_stash', JSON.stringify(s));
+            } catch(_) {}
+            return;
+        }
+
+        // Copy seed to clipboard so user has zero-friction paste into pw manager.
+        try {
+            await navigator.clipboard.writeText(sub.seed);
+            lg('Seed copied to clipboard. Paste it into your password manager NOW. Clipboard will be cleared in 60s.', 'succ');
+            // Clipboard hygiene — auto-clear after 60s so the seed doesn't
+            // sit there indefinitely waiting to be accidentally pasted.
+            setTimeout(function() {
+                navigator.clipboard.writeText('').catch(function(){});
+            }, 60000);
+        } catch (clipErr) {
+            lg('Could not auto-copy seed to clipboard. Use the address above to find it manually if needed.', 'err');
+        }
+
+        showLoad('FUNDING SUB-WALLET (1.5 XRP)...');
+        // ════════════════════════════════════════════════════════════════
+        //   END PRE-FLIGHT — seed is now safe in 3 places (browser memory,
+        //   localStorage stash, user's clipboard/password manager).
+        // ════════════════════════════════════════════════════════════════
+
         // Step 1: Fund sub-wallet
         // Build the lock-proof memo once and attach to all 3 lock transactions
         // so it appears on the primary's history, the CheckCreate, and the vault's CheckCash.
@@ -2506,7 +2662,6 @@ async function createEscrow() {
         });
         lg('Memo attached to lock txs: ' + memoBundle.text, 'inf');
 
-        showLoad('FUNDING SUB-WALLET (1.5 XRP)...');
         lg('Sending 1.5 XRP to activate sub-wallet...', 'inf');
         var fundTx = {
             TransactionType: 'Payment',
@@ -2680,16 +2835,20 @@ async function createEscrow() {
         // Step 3: Sub-wallet cashes the check
         showLoad('CASHING CHECK (AUTO-TRUST)...');
         lg('Sub-wallet cashing check...', 'inf');
-        var cashTx = await c.autofill({
+        var cashTx = await subWalletAutofill(c, sub, {
             TransactionType: 'CheckCash',
             Account: sub.address,
             CheckID: checkID,
             Amount: { currency: currency, issuer: issuer, value: amount.toString() },
             Fee: '12',
             Memos: memoBundle.memos
+        }, { ledgerBuffer: 150 }); // +150 ledger headroom — auto-trustline can be slow
+        var cashBlob = sub.sign(cashTx).tx_blob;
+        var cashRes = await submitAndWaitWithFailover(cashBlob, {
+            label: 'CheckCash ' + sub.address.slice(0,8),
+            perSubmitMs: 30000,
+            nodeRounds: 3
         });
-        cashTx.LastLedgerSequence = cashTx.LastLedgerSequence + 50; // extra headroom for slow nodes
-        var cashRes = await c.submitAndWait(sub.sign(cashTx).tx_blob);
         if (cashRes.result.meta.TransactionResult !== 'tesSUCCESS') {
             if (cashRes.result.meta.TransactionResult === 'tecNO_LINE_INSUF_RESERVE') {
                 throw new Error('Sub-wallet needs more XRP for trust line reserve.');
@@ -2781,16 +2940,117 @@ async function createEscrow() {
     } catch (e) {
         showErr(e.message);
         if (savedSubSeed && sub) {
+            // Stash the seed in module-scope keyed by address so the user can
+            // reveal & copy it via an explicit action. Never display the raw
+            // seed in normal log output (auditor patch #7) — screenshots and
+            // shared session recordings have leaked seeds in the past.
+            window._xrpmanRecoverySeeds = window._xrpmanRecoverySeeds || {};
+            window._xrpmanRecoverySeeds[sub.address] = savedSubSeed;
+
+            var maskedSeed = (savedSubSeed.length >= 8)
+                ? savedSubSeed.slice(0, 4) + '\u2022'.repeat(savedSubSeed.length - 8) + savedSubSeed.slice(-4)
+                : '\u2022'.repeat(savedSubSeed.length);
+
             lg('--- RECOVERY: SUB-WALLET WAS FUNDED ---', 'err');
             lg('The escrow process failed but the sub-wallet may have received XRP.', 'err');
             lg('Address: ' + sub.address, 'inf');
-            lg('Seed: ' + savedSubSeed, 'inf');
-            lg('Use this seed to recover any funds sent to the sub-wallet.', 'inf');
+            lg('Seed (masked): ' + maskedSeed, 'inf');
+            lg('To reveal & copy the recovery seed, run xrpmanRevealSeed("' + sub.address + '") in the browser console. \u26a0 Do NOT screenshot or share.', 'inf');
             lg('--- END RECOVERY ---', 'err');
-            alert('ESCROW FAILED — but the sub-wallet may have been funded.\n\nSave this seed to recover funds:\n' + savedSubSeed + '\n\nAddress: ' + sub.address);
+
+            // One-shot critical alert — masked by default. User must
+            // explicitly tap "REVEAL" inside the alert flow to see the seed.
+            // We use confirm() so a single tap shows the seed; otherwise the
+            // seed never leaves the page's memory in visible form.
+            var warned = confirm(
+                'ESCROW FAILED \u2014 sub-wallet may be funded.\n\n' +
+                'Address: ' + sub.address + '\n' +
+                'Seed: ' + maskedSeed + ' (masked)\n\n' +
+                '\u26a0 The recovery seed is hidden. Tap OK to reveal & copy it to your clipboard.\n' +
+                'DO NOT screenshot the next dialog. Anyone with the seed controls this sub-wallet.'
+            );
+            if (warned) {
+                xrpmanRevealSeed(sub.address);
+            }
         }
     } finally {
         hideLoad();
+    }
+}
+
+// Reveal & copy a stashed recovery seed. Checks two sources: (1) the
+// in-memory pool which only persists for the current page session, and
+// (2) the localStorage stash 'xrpman_subwallet_stash' which survives tab
+// close, browser crash, OS restart. Does NOT log the raw seed — only
+// writes to clipboard with a brief on-screen confirmation.
+function xrpmanRevealSeed(address) {
+    // Try in-memory pool first
+    var pool = window._xrpmanRecoverySeeds || {};
+    var seed = pool[address];
+
+    // Fall back to persistent localStorage stash
+    if (!seed) {
+        try {
+            var stash = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
+            if (stash[address] && stash[address].seed) {
+                seed = stash[address].seed;
+            }
+        } catch(_) {}
+    }
+
+    if (!seed) {
+        alert('No recovery seed found for ' + address + '.\n\nChecked:\n  - in-memory pool (cleared on reload)\n  - localStorage stash key xrpman_subwallet_stash\n\nIf you exported the seed earlier, it should be in your password manager.');
+        return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(seed).then(function(){
+            lg('Recovery seed for ' + address.slice(0,8) + '... copied to clipboard. Paste into a secure location and clear clipboard when done.', 'succ');
+        }).catch(function(){
+            // Clipboard blocked — fall back to one-time prompt
+            window.prompt('Recovery seed (copy now, do NOT screenshot):', seed);
+        });
+    } else {
+        window.prompt('Recovery seed (copy now, do NOT screenshot):', seed);
+    }
+}
+
+// List every sub-wallet seed currently in the persistent stash. Lets the
+// user audit what's saved. Output goes to the log as addresses only.
+function xrpmanListStashedSeeds() {
+    try {
+        var stash = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
+        var addrs = Object.keys(stash);
+        if (addrs.length === 0) {
+            lg('No seeds in local stash.', 'inf');
+            return [];
+        }
+        lg('=== STASHED SUB-WALLET SEEDS (' + addrs.length + ') ===', 'inf');
+        addrs.forEach(function(a) {
+            var entry = stash[a];
+            var ageH = ((Date.now() - (entry.createdAt || 0)) / 3600000).toFixed(1);
+            lg('  ' + a + ' [' + (entry.network || '?') + '] ' + ageH + 'h old. Reveal: xrpmanRevealSeed("' + a + '")', 'inf');
+        });
+        return addrs;
+    } catch (e) {
+        lg('Could not read stash: ' + e.message, 'err');
+        return [];
+    }
+}
+
+// Remove a stashed seed once the sub-wallet has been recovered/deleted.
+// Call this manually after the AccountDelete completes successfully.
+function xrpmanClearStashedSeed(address) {
+    try {
+        var stash = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
+        if (stash[address]) {
+            delete stash[address];
+            localStorage.setItem('xrpman_subwallet_stash', JSON.stringify(stash));
+            lg('Stashed seed for ' + address.slice(0,8) + '... cleared.', 'succ');
+        } else {
+            lg('No stashed seed found for ' + address, 'inf');
+        }
+    } catch (e) {
+        lg('Could not clear stash entry: ' + e.message, 'err');
     }
 }
 
@@ -2965,16 +3225,20 @@ async function runResumePending(pending, userPw, adminPw) {
 
         // Step 3: Sub-wallet cashes the check
         showLoad('CASHING CHECK (AUTO-TRUST)...');
-        var cashTx = await c.autofill({
+        var cashTx = await subWalletAutofill(c, sub, {
             TransactionType: 'CheckCash',
             Account: sub.address,
             CheckID: checkID,
             Amount: { currency: pending.currencyHex, issuer: pending.issuer, value: pending.amount },
             Fee: '12',
             Memos: pending.memos
+        }, { ledgerBuffer: 150 });
+        var cashBlob = sub.sign(cashTx).tx_blob;
+        var cashRes = await submitAndWaitWithFailover(cashBlob, {
+            label: 'CheckCash-resume ' + sub.address.slice(0,8),
+            perSubmitMs: 30000,
+            nodeRounds: 3
         });
-        cashTx.LastLedgerSequence = cashTx.LastLedgerSequence + 50;
-        var cashRes = await c.submitAndWait(sub.sign(cashTx).tx_blob);
         if (cashRes.result.meta.TransactionResult !== 'tesSUCCESS') {
             if (cashRes.result.meta.TransactionResult === 'tecNO_LINE_INSUF_RESERVE') {
                 throw new Error('Sub-wallet needs more XRP for trust line reserve.');
@@ -3142,6 +3406,192 @@ function decodeSignedSequence(hex) {
     } catch(e) { return null; }
 }
 
+// Resilient RPC wrapper. Wraps c.request with a short per-request timeout
+// (8s instead of xrpl.js's 25s default), exponential backoff between attempts,
+// and a forced WebSocket reconnect on timeout — the cluster occasionally hands
+// us a node that accepts the connection but stops responding to commands; the
+// reconnect lets getClient() pick a different node from the failover list.
+// Resilient submit. Wraps c.submitAndWait with node-rotation failover that
+// uses the LOCALLY-COMPUTED tx hash to avoid double-spends. The risk with
+// naively retrying a submit is: if the original node DID accept the blob
+// before timing out, resubmitting on a new node would be a duplicate (which
+// rippled rejects with tefALREADY) OR worse, a replay if Sequence was
+// already used. We dodge both by computing the hash from the blob (pure
+// crypto, no network), submitting once per node, and on timeout looking up
+// the hash on the next node BEFORE deciding to resubmit.
+//
+// Outcomes:
+//   * submit returned tesSUCCESS (or any result) → return it
+//   * submit timed out, hash found validated on next node → return synthetic success
+//   * submit timed out, hash found in mempool → wait + recheck
+//   * submit timed out, hash not on chain → safe to re-submit on the new node
+//   * all nodes exhausted → optional: sleep + start a new round (configurable)
+async function submitAndWaitWithFailover(blob, opts) {
+    opts = opts || {};
+    var perSubmitMs    = (typeof opts.perSubmitMs === 'number') ? opts.perSubmitMs : 30000;
+    var perLookupMs    = (typeof opts.perLookupMs === 'number') ? opts.perLookupMs : 8000;
+    var nodeRounds     = (typeof opts.nodeRounds === 'number') ? opts.nodeRounds : 3;     // how many full passes through the node list
+    var label          = opts.label || 'submit';
+
+    if (!window.xrpl || !xrpl.hashes || typeof xrpl.hashes.hashSignedTx !== 'function') {
+        throw new Error('xrpl.hashes.hashSignedTx unavailable — cannot compute hash for failover.');
+    }
+    var txHash = xrpl.hashes.hashSignedTx(blob);
+    lg(label + ' hash (computed locally): ' + txHash.slice(0,16) + '...', 'inf');
+
+    var nodes = NETS[NET];
+    var totalAttempts = nodes.length * nodeRounds;
+    var attempt = 0;
+
+    while (attempt < totalAttempts) {
+        attempt++;
+        var c = await getClient();
+        var currentNode = nodes[_currentNodeIdx] || '?';
+
+        // Step A: try to submit on this node.
+        var submitDone = false;
+        var submitRes = null;
+        var submitErr = null;
+        try {
+            // Race c.submitAndWait against a timeout — xrpl.js's own timeout
+            // is too long (25s) and only fires per-request, not on the whole
+            // submit-then-poll chain.
+            submitRes = await Promise.race([
+                c.submitAndWait(blob),
+                new Promise(function(_, rej) {
+                    setTimeout(function(){ rej(new Error('Local timeout after ' + (perSubmitMs/1000) + 's')); }, perSubmitMs);
+                })
+            ]);
+            submitDone = true;
+        } catch (e) {
+            submitErr = e;
+        }
+
+        if (submitDone && submitRes && submitRes.result) {
+            lg(label + ' validated on ' + currentNode + '.', 'succ');
+            return submitRes;
+        }
+
+        // Step B: submit didn't return. Rotate to the next node and look up
+        // the hash. If the network actually accepted the tx, it'll be there;
+        // if not, we can safely resubmit.
+        var msg = (submitErr && submitErr.message) || 'unknown error';
+        lg(label + ' on ' + currentNode + ' did not return (' + msg + '). Rotating to verify hash on a different node...', 'inf');
+        try { if (client) await client.disconnect().catch(function(){}); } catch(_) {}
+        client = null;
+        _currentNodeIdx = (_currentNodeIdx + 1) % nodes.length;
+
+        // Wait briefly for the next node to pick up the validated ledger if
+        // the previous node's submit succeeded behind the scenes.
+        await new Promise(function(r){ setTimeout(r, 3000); });
+
+        // Step C: look up the hash on the new node.
+        var lookupResp = null;
+        try {
+            lookupResp = await requestWithRetry(
+                { command: 'tx', tx_hash: txHash, binary: false },
+                { attempts: 2, timeout: perLookupMs, label: label + ' hash-lookup' }
+            );
+        } catch (lookupErr) {
+            // txnNotFound throws here — that's what we want. Means the network
+            // never saw the tx, so resubmitting is safe. Anything else is a
+            // network blip; either way, fall through to the next iteration
+            // which will reattempt submit on the new node.
+            var lmsg = (lookupErr && lookupErr.message) || '';
+            if (/txnNotFound|not found/i.test(lmsg)) {
+                lg(label + ' not on ledger — safe to resubmit on next node.', 'inf');
+            } else {
+                lg(label + ' hash lookup error (' + lmsg + ') — will resubmit.', 'inf');
+            }
+            continue;
+        }
+
+        // Hash was found on the network. Decide based on validation state.
+        if (lookupResp && lookupResp.result) {
+            if (lookupResp.result.validated === true) {
+                lg(label + ' was actually validated by previous node (recovered via hash lookup).', 'succ');
+                return {
+                    result: {
+                        meta: lookupResp.result.meta,
+                        hash: txHash,
+                        tx_json: lookupResp.result,
+                        _viaHashRecovery: true
+                    }
+                };
+            }
+            // Found but not yet validated — give it a few more seconds before re-checking
+            lg(label + ' is in the network but not yet validated. Waiting for next ledger close...', 'inf');
+            for (var w = 0; w < 10; w++) {
+                await new Promise(function(r){ setTimeout(r, 3000); });
+                try {
+                    var poll = await requestWithRetry(
+                        { command: 'tx', tx_hash: txHash, binary: false },
+                        { attempts: 1, timeout: perLookupMs, label: label + ' hash-poll' }
+                    );
+                    if (poll && poll.result && poll.result.validated === true) {
+                        lg(label + ' validated via post-failover poll.', 'succ');
+                        return {
+                            result: {
+                                meta: poll.result.meta,
+                                hash: txHash,
+                                tx_json: poll.result,
+                                _viaHashRecovery: true
+                            }
+                        };
+                    }
+                } catch(e) { /* keep polling */ }
+            }
+            // Still not validated after 30s — probably going to fail on
+            // LastLedgerSequence. Move on; the next round may still succeed
+            // if the tx hasn't lapsed.
+            lg(label + ' still unvalidated after 30s post-failover poll. Continuing.', 'inf');
+        }
+        // fall through: try the next node
+    }
+
+    throw new Error(label + ' failed after ' + totalAttempts + ' attempts across ' + nodes.length + ' nodes (' + nodeRounds + ' rounds). Tx hash: ' + txHash);
+}
+
+async function requestWithRetry(req, opts) {
+    opts = opts || {};
+    var attempts = (typeof opts.attempts === 'number') ? opts.attempts : 5;
+    var perReqTimeout = (typeof opts.timeout === 'number') ? opts.timeout : 8000;
+    var backoffs = opts.backoffs || [1500, 3000, 5000, 8000, 13000];
+    var label = opts.label || (req.command + ' ' + (req.account ? req.account.slice(0,8) + '...' : ''));
+    var lastErr = null;
+    for (var i = 0; i < attempts; i++) {
+        try {
+            var c = await getClient();
+            return await c.request(req, perReqTimeout);
+        } catch (e) {
+            lastErr = e;
+            var msg = (e && e.message) || String(e);
+            var isTimeout = /Timeout/i.test(msg);
+            var isDisconnect = /not connected|disconnected|NotConnectedError/i.test(msg);
+
+            // Always rotate + disconnect on timeout/disconnect, even when this
+            // was the last attempt. Otherwise callers that pass attempts:1
+            // (e.g. waitForAccountValidated) would burn cycle after cycle on
+            // the same broken client because client.isConnected() still
+            // returns true on a hung-but-not-dropped socket.
+            if (isTimeout || isDisconnect) {
+                var nodeCount = (NETS[NET] || []).length || 1;
+                _currentNodeIdx = (_currentNodeIdx + 1) % nodeCount;
+                lg('RPC timeout during ' + label + '; rotating to ' + (NETS[NET][_currentNodeIdx] || '?') +
+                   ' (attempt ' + (i + 1) + '/' + attempts + ')...', 'inf');
+                try { if (client) await client.disconnect().catch(function(){}); } catch (_) {}
+                client = null; // force getClient() to dial the next node in rotation
+            } else {
+                lg('RPC error during ' + label + ' (attempt ' + (i + 1) + '/' + attempts + '): ' + msg, 'inf');
+            }
+
+            if (i === attempts - 1) break;  // rotation already done; exit loop now
+            await new Promise(function(r){ setTimeout(r, backoffs[Math.min(i, backoffs.length - 1)]); });
+        }
+    }
+    throw lastErr || new Error('RPC ' + label + ' failed after ' + attempts + ' attempts.');
+}
+
 // Block until our queried node sees the given account as activated (auditor
 // patch #3, addresses H5). Xaman submits via its own infrastructure; the node
 // xrpl.js connects to may lag a few ledgers. Calling this between fund-Payment
@@ -3152,17 +3602,21 @@ async function waitForAccountValidated(c, address, maxMs) {
     var attempts = 0;
     while (Date.now() < deadline) {
         try {
-            var r = await c.request({
+            // Use a short per-request timeout (8s) so we don't burn the whole
+            // deadline on a single hung request. Reconnect on timeout via
+            // requestWithRetry's internal logic — single attempt here, retry
+            // loop is the outer while.
+            var r = await requestWithRetry({
                 command: 'account_info',
                 account: address,
                 ledger_index: 'validated'
-            });
+            }, { attempts: 1, timeout: 8000, label: 'account_info ' + address.slice(0,8) });
             if (r && r.result && r.result.account_data && r.result.account_data.Balance) {
-                if (attempts > 0) lg('Sub-wallet visible after ' + (attempts * 2) + 's of propagation wait.', 'succ');
+                if (attempts > 0) lg('Sub-wallet account confirmed after retry ' + attempts + '.', 'succ');
                 return r.result.account_data;
             }
-        } catch(e) {
-            // actNotFound is expected during propagation
+        } catch (e) {
+            // actNotFound is expected during propagation; timeouts handled by requestWithRetry
         }
         attempts++;
         if (attempts > 0 && attempts % 3 === 0) {
@@ -3170,9 +3624,45 @@ async function waitForAccountValidated(c, address, maxMs) {
         }
         await new Promise(function(r){ setTimeout(r, 2000); });
     }
-    var err = new Error('Sub-wallet not visible on the queried node within ' + (maxMs/1000) + 's. The fund transaction may still be propagating — try again in a minute.');
+    var err = new Error('CheckCash blocked: sub-wallet not confirmed after ' + (maxMs/1000) + 's of retries. The fund transaction may still be propagating — try again in a minute.');
     err.activationTimeout = true;
     throw err;
+}
+
+// Replacement for xrpl.js's c.autofill() when the signing account is a
+// freshly-activated sub-wallet. xrpl.js autofill internally calls
+// account_info(account, ledger_index:'current') to read Sequence — that
+// request times out (~25s, websocket id) on cluster nodes that just barely
+// see the activation Payment. We instead use waitForAccountValidated (which
+// queries 'validated', the most-recent fully-confirmed ledger) plus a single
+// 'ledger' command for LastLedgerSequence. No 'current' lookups.
+async function subWalletAutofill(c, sub, txjson, opts) {
+    opts = opts || {};
+    var ledgerBuffer = (typeof opts.ledgerBuffer === 'number') ? opts.ledgerBuffer : 100;
+    var maxWaitMs   = (typeof opts.maxWaitMs   === 'number') ? opts.maxWaitMs   : 60000;
+
+    // 1) Sub's account_data via the retry-tolerant validated-ledger path.
+    var acctData = await waitForAccountValidated(c, sub.address, maxWaitMs);
+
+    // 2) Current validated ledger index for LastLedgerSequence ceiling.
+    //    Wrapped in requestWithRetry to survive cluster node hangs — same
+    //    failure mode that took down the CheckCash flow before this patch.
+    var ledgerResp = await requestWithRetry(
+        { command: 'ledger', ledger_index: 'validated' },
+        { attempts: 5, timeout: 8000, label: 'ledger validated' }
+    );
+    var currentLedger = ledgerResp.result.ledger_index;
+
+    // 3) Pre-populate the fields autofill would have queried for. Anything
+    //    the caller already set takes precedence (e.g. an explicit Sequence
+    //    override for chained transactions).
+    var filled = {};
+    Object.keys(txjson).forEach(function(k) { filled[k] = txjson[k]; });
+    if (filled.Account == null)            filled.Account = sub.address;
+    if (filled.Sequence == null)           filled.Sequence = acctData.Sequence;
+    if (filled.LastLedgerSequence == null) filled.LastLedgerSequence = currentLedger + ledgerBuffer;
+    if (filled.Fee == null)                filled.Fee = '12';
+    return filled;
 }
 
 async function fetchCheckIDForSub(c, subAddress, primaryAddress) {
@@ -3591,12 +4081,16 @@ async function claimEscrow() {
     try {
         var c = await getClient();
 
-        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
+        var ledgerResp = await requestWithRetry(
+            { command: 'ledger', ledger_index: 'validated' },
+            { attempts: 5, timeout: 8000, label: 'claim ledger time' }
+        );
         var currentLedgerTime = ledgerResp.result.ledger.close_time;
         // [13.2] Ledger time lock check
         if (currentLedgerTime < escrow.unlockLedgerTime) {
+            var remainingMs = (escrow.unlockLedgerTime - currentLedgerTime) * 1000;
             throw new Error('Lock period has NOT expired (verified via ledger time). Remaining: ~' +
-                Math.ceil((escrow.unlockLedgerTime - currentLedgerTime) / 86400) + ' days.');
+                (formatLockDuration(remainingMs) || 'less than 1 minute') + '.');
         }
 
         showLoad('DECRYPTING VAULT (ARGON2ID)...');
@@ -3614,7 +4108,10 @@ async function claimEscrow() {
 
         // Sweep tokens back to primary
         showLoad('SWEEPING TOKENS...');
-        var lines = await c.request({ command: 'account_lines', account: sub.address, ledger_index: 'validated' });
+        var lines = await requestWithRetry(
+            { command: 'account_lines', account: sub.address, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'claim trustlines ' + sub.address.slice(0,8) }
+        );
         var trustCleanupFailed = false;
         var tokenNameSwept = hexToCurrency(escrow.currencyHex);
         var totalSwept = 0;
@@ -3623,14 +4120,19 @@ async function claimEscrow() {
             var line = lines.result.lines[i];
             if (parseFloat(line.balance) > 0) {
                 lg('Sweeping ' + line.balance + ' ' + hexToCurrency(line.currency) + '...', 'inf');
-                var payTx = await c.autofill({
+                var payTx = await subWalletAutofill(c, sub, {
                     TransactionType: 'Payment',
                     Account: sub.address,
                     Destination: wallet.address,
                     Amount: { currency: line.currency, issuer: line.account, value: line.balance },
                     Fee: '12'
                 });
-                var payRes = await c.submitAndWait(sub.sign(payTx).tx_blob);
+                var payBlob = sub.sign(payTx).tx_blob;
+                var payRes = await submitAndWaitWithFailover(payBlob, {
+                    label: 'Sweep ' + hexToCurrency(line.currency),
+                    perSubmitMs: 25000,
+                    nodeRounds: 2
+                });
                 // [9.4] Sweep hash
                 var ph = payRes.result.hash || payRes.result.tx_json && payRes.result.tx_json.hash || '';
                 sweepHashes.push(ph);
@@ -3645,14 +4147,19 @@ async function claimEscrow() {
             // Remove trust line
             showLoad('REMOVING TRUST LINES...');
             try {
-                var tlTx = await c.autofill({
+                var tlTx = await subWalletAutofill(c, sub, {
                     TransactionType: 'TrustSet',
                     Account: sub.address,
                     Flags: 131072,
                     LimitAmount: { currency: line.currency, issuer: line.account, value: '0' },
                     Fee: '12'
                 });
-                var tlRes = await c.submitAndWait(sub.sign(tlTx).tx_blob);
+                var tlBlob = sub.sign(tlTx).tx_blob;
+                var tlRes = await submitAndWaitWithFailover(tlBlob, {
+                    label: 'TrustSet remove ' + hexToCurrency(line.currency),
+                    perSubmitMs: 25000,
+                    nodeRounds: 2
+                });
                 // [9.5] TrustSet hash
                 var th = tlRes.result.hash || tlRes.result.tx_json && tlRes.result.tx_json.hash || '';
                 trustHashes.push(th);
@@ -3777,8 +4284,10 @@ async function showVaultDetail(escrowId) {
     body.innerHTML = html;
 
     try {
-        var c = await getClient();
-        var info = await c.request({ command: 'account_info', account: e.subAddress, ledger_index: 'validated' });
+        var info = await requestWithRetry(
+            { command: 'account_info', account: e.subAddress, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'detail ' + e.subAddress.slice(0,8) }
+        );
         var bal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
         var ownerCount = info.result.account_data.OwnerCount || 0;
 
@@ -3786,7 +4295,10 @@ async function showVaultDetail(escrowId) {
         liveHtml += '<div style="color:var(--txt)">Reserve locked: ' + (1 + ownerCount * 0.2).toFixed(1) + ' XRP (' + ownerCount + ' objects)</div>';
 
         try {
-            var tlines = await c.request({ command: 'account_lines', account: e.subAddress, ledger_index: 'validated' });
+            var tlines = await requestWithRetry(
+                { command: 'account_lines', account: e.subAddress, ledger_index: 'validated' },
+                { attempts: 3, timeout: 8000, label: 'detail-lines ' + e.subAddress.slice(0,8) }
+            );
             var toks = tlines.result.lines || [];
             if (toks.length > 0) {
                 liveHtml += '<div style="margin-top:6px;color:#00aa00">TOKENS IN VAULT:</div>';
@@ -3882,8 +4394,10 @@ async function detailCheckBalance() {
     liveEl.innerHTML = '<span style="color:#555">Querying ledger...</span>';
 
     try {
-        var c = await getClient();
-        var info = await c.request({ command: 'account_info', account: detailEscrow.subAddress, ledger_index: 'validated' });
+        var info = await requestWithRetry(
+            { command: 'account_info', account: detailEscrow.subAddress, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'check-bal ' + detailEscrow.subAddress.slice(0,8) }
+        );
         var bal = parseFloat(xrpl.dropsToXrp(info.result.account_data.Balance));
         var ownerCount = info.result.account_data.OwnerCount || 0;
 
@@ -3891,7 +4405,10 @@ async function detailCheckBalance() {
         html += '<div style="color:var(--txt)">Objects: ' + ownerCount + '</div>';
 
         try {
-            var lines = await c.request({ command: 'account_lines', account: detailEscrow.subAddress, ledger_index: 'validated' });
+            var lines = await requestWithRetry(
+                { command: 'account_lines', account: detailEscrow.subAddress, ledger_index: 'validated' },
+                { attempts: 3, timeout: 8000, label: 'check-bal-lines ' + detailEscrow.subAddress.slice(0,8) }
+            );
             var toks = lines.result.lines || [];
             for (var i = 0; i < toks.length; i++) {
                 var tbal = parseFloat(toks[i].balance);
@@ -4122,12 +4639,179 @@ async function emergencyManualDelete() {
         confRow('NETWORK', NET.toUpperCase()) +
         '<div class="conf-warn">' +
         '&#9888; This runs <b>AccountDelete</b> on the sub-wallet. The XRP balance (minus a 0.2 XRP burn fee) will be sent to the destination. <b>This is irreversible.</b><br><br>' +
-        'If the sub-wallet still has trust lines (tokens), this will fail — claim those tokens via Xaman first, then come back here.' +
+        '<b>Auto-clear is active:</b> if the sub-wallet has trust lines, checks, offers, or NFT offers blocking the delete, the app will automatically cancel them and transfer any tokens to the destination (or back to the issuer if the destination has no trustline). Up to 3 clear-and-retry cycles. Escrow / PayChannel / NFT-page blockers still need manual handling.' +
         '</div>';
 
     showConfirm('CONFIRM EMERGENCY DELETE', confirmHtml, 'CONFIRM &amp; DELETE', function() {
         runEmergencyDelete(sub, destination);
     });
+}
+
+// Sign a transaction with the sub-wallet's seed and submit it. Uses
+// subWalletAutofill for resilient field population (Sequence, ledger ceiling)
+// so a hung node during prep gets rotated automatically.
+async function signAndSubmitSubTx(c, sub, txjson, label) {
+    var filled = await subWalletAutofill(c, sub, txjson, { ledgerBuffer: 100 });
+    var signed = sub.sign(filled);
+    var res = await submitAndWaitWithFailover(signed.tx_blob, {
+        label: label,
+        perSubmitMs: 25000,
+        nodeRounds: 2
+    });
+    var code = res && res.result && res.result.meta && res.result.meta.TransactionResult;
+    if (code !== 'tesSUCCESS') {
+        throw new Error(label + ' returned ' + (code || 'unknown'));
+    }
+    return res;
+}
+
+// AccountDelete blockers cleaner. Walks the sub-wallet's owned objects and
+// proactively clears anything that would block AccountDelete:
+//   - Check (where sub is destination)  → CheckCancel  (destination can cancel anytime)
+//   - RippleState (trust line)          → Payment of any balance to destination
+//                                         (or back to issuer if dest has no trustline),
+//                                         then TrustSet limit:0 to remove the line
+//   - Offer                             → OfferCancel
+//   - NFTokenOffer                      → NFTokenCancelOffer
+// PayChannel and Escrow are not auto-cleared (require time-locks / cooperation
+// from the other party); we surface them and skip.
+async function clearAllBlockers(c, sub, destinationAddress) {
+    var BLOCKING_TYPES = { Check: 1, Escrow: 1, NFTokenPage: 1, PayChannel: 1, RippleState: 1, Offer: 1, NFTokenOffer: 1 };
+    var resp;
+    try {
+        resp = await requestWithRetry(
+            { command: 'account_objects', account: sub.address, ledger_index: 'validated' },
+            { attempts: 3, timeout: 8000, label: 'clear-blockers ' + sub.address.slice(0,8) }
+        );
+    } catch (e) {
+        lg('Could not enumerate blockers: ' + e.message, 'err');
+        return { cleared: 0, skipped: 0, manual: 0, total: 0 };
+    }
+    var all = (resp.result && resp.result.account_objects) || [];
+    var blockers = all.filter(function(o) { return BLOCKING_TYPES[o.LedgerEntryType]; });
+
+    if (blockers.length === 0) {
+        lg('No blockers to clear.', 'inf');
+        return { cleared: 0, skipped: 0, manual: 0, total: 0 };
+    }
+
+    lg('Found ' + blockers.length + ' blocker(s). Clearing...', 'inf');
+    var cleared = 0, skipped = 0, manual = 0;
+
+    for (var i = 0; i < blockers.length; i++) {
+        var obj = blockers[i];
+        try {
+            if (obj.LedgerEntryType === 'Check' && obj.Destination === sub.address) {
+                lg('  Cancelling Check ' + (obj.index || '').slice(0,12) + '...', 'inf');
+                await signAndSubmitSubTx(c, sub, {
+                    TransactionType: 'CheckCancel',
+                    Account: sub.address,
+                    CheckID: obj.index
+                }, 'CheckCancel');
+                cleared++;
+                lg('  ✓ Check cancelled.', 'succ');
+
+            } else if (obj.LedgerEntryType === 'Check') {
+                // Sub is the SENDER of this Check (rare for an escrow sub-wallet
+                // but possible). Sender can only CheckCancel before Expiration;
+                // we'll try and let the network reject if it's expired.
+                lg('  Cancelling Check (as sender) ' + (obj.index || '').slice(0,12) + '...', 'inf');
+                await signAndSubmitSubTx(c, sub, {
+                    TransactionType: 'CheckCancel',
+                    Account: sub.address,
+                    CheckID: obj.index
+                }, 'CheckCancel-as-sender');
+                cleared++;
+                lg('  ✓ Check cancelled.', 'succ');
+
+            } else if (obj.LedgerEntryType === 'RippleState') {
+                // Determine sub's side and balance. RippleState.Balance.value is
+                // signed from the LOW account's perspective: positive means LOW
+                // owes HIGH (i.e. HIGH holds tokens).
+                var subIsHigh = obj.HighLimit && obj.HighLimit.issuer === sub.address;
+                var rawBal = parseFloat(obj.Balance.value);
+                var subHolds = subIsHigh ? -rawBal : rawBal;
+                var counterparty = subIsHigh ? obj.LowLimit.issuer : obj.HighLimit.issuer;
+                var currency = obj.Balance.currency;
+                var currencyLabel = currency.length === 40 ? currency.slice(0,8) + '...' : currency;
+
+                if (subHolds > 0) {
+                    // Sub holds tokens — send them to the destination wallet first.
+                    var amount = { currency: currency, issuer: counterparty, value: subHolds.toString() };
+                    try {
+                        lg('  Sending ' + subHolds + ' ' + currencyLabel + ' to ' + truncAddr(destinationAddress) + '...', 'inf');
+                        await signAndSubmitSubTx(c, sub, {
+                            TransactionType: 'Payment',
+                            Account: sub.address,
+                            Destination: destinationAddress,
+                            Amount: amount
+                        }, 'Send tokens to primary');
+                        lg('  ✓ Tokens transferred to primary.', 'succ');
+                    } catch (sendErr) {
+                        // Most likely failure: primary lacks a trustline (tecPATH_DRY / tecNO_LINE_*).
+                        // Fall back to sending tokens back to the issuer, which is
+                        // always accepted (issuers can always receive their own tokens).
+                        if (/tecPATH_DRY|tecNO_LINE|tecPATH_PARTIAL|tecUNFUNDED/i.test(sendErr.message)) {
+                            lg('  Primary cannot receive ' + currencyLabel + ' (no trustline). Returning to issuer ' + truncAddr(counterparty) + '...', 'inf');
+                            await signAndSubmitSubTx(c, sub, {
+                                TransactionType: 'Payment',
+                                Account: sub.address,
+                                Destination: counterparty,
+                                Amount: amount
+                            }, 'Return tokens to issuer');
+                            lg('  ✓ Tokens returned to issuer.', 'succ');
+                        } else {
+                            throw sendErr;
+                        }
+                    }
+                }
+
+                // Now close the trust line. Setting LimitAmount value:'0' with
+                // zero balance removes the RippleState entry on next ledger close.
+                lg('  Removing trustline for ' + currencyLabel + '...', 'inf');
+                await signAndSubmitSubTx(c, sub, {
+                    TransactionType: 'TrustSet',
+                    Account: sub.address,
+                    LimitAmount: { currency: currency, issuer: counterparty, value: '0' },
+                    Flags: 0x00020000  // tfClearNoRipple — best-effort flag clear
+                }, 'TrustSet limit:0');
+                cleared++;
+                lg('  ✓ Trustline removed.', 'succ');
+
+            } else if (obj.LedgerEntryType === 'Offer') {
+                lg('  Cancelling Offer #' + obj.Sequence + '...', 'inf');
+                await signAndSubmitSubTx(c, sub, {
+                    TransactionType: 'OfferCancel',
+                    Account: sub.address,
+                    OfferSequence: obj.Sequence
+                }, 'OfferCancel');
+                cleared++;
+                lg('  ✓ Offer cancelled.', 'succ');
+
+            } else if (obj.LedgerEntryType === 'NFTokenOffer') {
+                lg('  Cancelling NFTokenOffer ' + (obj.index || '').slice(0,12) + '...', 'inf');
+                await signAndSubmitSubTx(c, sub, {
+                    TransactionType: 'NFTokenCancelOffer',
+                    Account: sub.address,
+                    NFTokenOffers: [obj.index]
+                }, 'NFTokenCancelOffer');
+                cleared++;
+                lg('  ✓ NFTokenOffer cancelled.', 'succ');
+
+            } else {
+                // Escrow, PayChannel, NFTokenPage — require manual handling
+                // (time-locks, claims, NFT burns/transfers).
+                lg('  ⚠ Cannot auto-clear ' + obj.LedgerEntryType + ' — requires manual intervention.', 'err');
+                manual++;
+            }
+        } catch (clearErr) {
+            lg('  ✗ Failed to clear ' + obj.LedgerEntryType + ': ' + (clearErr.message || clearErr), 'err');
+            skipped++;
+        }
+    }
+
+    lg('Blocker pass complete: ' + cleared + ' cleared, ' + skipped + ' failed, ' + manual + ' need manual intervention.', cleared > 0 ? 'succ' : 'inf');
+    return { cleared: cleared, skipped: skipped, manual: manual, total: blockers.length };
 }
 
 async function runEmergencyDelete(sub, destination) {
@@ -4138,10 +4822,55 @@ async function runEmergencyDelete(sub, destination) {
     showLoad('EMERGENCY DELETE...');
 
     try {
-        // Reuse the standard delete pipeline. The synthetic id is intentional —
-        // markEscrowDeleted will simply not find a matching record and no-op.
         var syntheticId = 'emergency:' + sub.address;
-        var outcome = await tryDeleteNow(sub, destination, syntheticId);
+        var c = await getClient();
+        var outcome = null;
+        var maxCycles = 3;
+
+        for (var cycle = 0; cycle < maxCycles; cycle++) {
+            outcome = await tryDeleteNow(sub, destination, syntheticId);
+
+            if (outcome === 'deleted') break;
+
+            if (outcome === 'has_objects') {
+                // Auto-clear blockers (trust lines, checks, offers, NFT offers)
+                // and re-attempt delete. Each clear pass uses one tx per blocker
+                // signed by the sub-wallet. Trust lines: tokens get sent to the
+                // destination if it has a matching trustline, else back to the
+                // issuer; then the trust line itself is closed.
+                resultEl.innerHTML = '<span class="inf">Sub-wallet has trust lines / checks. Auto-clearing... (cycle ' + (cycle + 1) + '/' + maxCycles + ')</span>';
+                showLoad('CLEARING BLOCKERS (cycle ' + (cycle + 1) + '/' + maxCycles + ')...');
+                lg('=== AUTO-CLEAR CYCLE ' + (cycle + 1) + ' ===', 'inf');
+
+                var report = await clearAllBlockers(c, sub, destination);
+
+                if (report.total === 0) {
+                    // Nothing was actually blocking? OwnerCount lied; bail out.
+                    lg('No clearable blockers found despite has_objects status — escalating.', 'err');
+                    break;
+                }
+                if (report.cleared === 0) {
+                    // Everything was either a manual-only object or all clears failed.
+                    if (report.manual > 0) {
+                        resultEl.innerHTML = '<span style="color:#ff8844">' + report.manual +
+                            ' object(s) require manual intervention (Escrow / PayChannel / NFTs). Use Xaman to handle these directly. ' +
+                            'Cleared this pass: 0 / failed: ' + report.skipped + '</span>';
+                    } else {
+                        resultEl.innerHTML = '<span style="color:#ff6666">All ' + report.skipped + ' clear attempts failed. Check log and retry.</span>';
+                    }
+                    break;
+                }
+
+                // Wait for ledger to close so cleared objects propagate
+                lg('Waiting 5s for ledger to settle, then retrying delete...', 'inf');
+                showLoad('LEDGER SETTLING...');
+                await new Promise(function(r) { setTimeout(r, 5000); });
+                continue;
+            }
+
+            // too_soon, has_xrp, failed — stop the loop
+            break;
+        }
 
         if (outcome === 'deleted') {
             lg('=== EMERGENCY DELETE SUCCEEDED. XRP RECOVERED. ===', 'succ');
@@ -4151,16 +4880,14 @@ async function runEmergencyDelete(sub, destination) {
                 buildReceiptRow('DESTINATION', destination) +
                 buildReceiptRow('NETWORK', NET.toUpperCase()) +
                 buildReceiptRow('STATUS', '<span class="succ">CONFIRMED DELETED</span>'), '', '');
-            // Clear the inputs after success
             document.getElementById('er_seed').value = '';
             document.getElementById('er_dest').value = '';
             document.getElementById('er_derived').textContent = '';
-            // Refresh primary balance — the recovered XRP is now there
             try { await refreshWallet(true); } catch(e) {}
         } else if (outcome === 'too_soon') {
             resultEl.innerHTML = '<span class="inf">&#8987; Account too new (under 256 ledgers / ~15 min). Wait a bit and try again.</span>';
         } else if (outcome === 'has_objects') {
-            resultEl.innerHTML = '<span style="color:#ff8844">Sub-wallet still holds trust lines or other objects. Claim/sweep tokens first (Xaman import the seed), then retry.</span>';
+            resultEl.innerHTML = '<span style="color:#ff8844">Auto-clear ran ' + maxCycles + ' cycles but objects remain. Check the log — likely a manual-only blocker (Escrow time-lock, PayChannel settle delay, or NFT page).</span>';
         } else {
             resultEl.innerHTML = '<span style="color:#ff6666">Delete failed — check log for details. Account may not exist on ' + NET.toUpperCase() + ', or seed may be wrong network.</span>';
         }
@@ -5491,6 +6218,9 @@ function xamanCancel() { _xamanCancelled = true; }
 // First tap fires the deep link as normal. Subsequent taps are blocked
 // until the request resolves (success/cancel/timeout/abort), at which
 // point the overlay closes and state resets.
+var _xamanWaitTickHandle = null;
+var _xamanWaitStartedAt = 0;
+
 function _xamanResetOpenButton() {
     var link = document.getElementById('xaman-link');
     var btn  = document.getElementById('xaman-open-btn');
@@ -5498,6 +6228,8 @@ function _xamanResetOpenButton() {
     if (link) link.classList.remove('is-waiting');
     if (btn)  btn.classList.remove('is-waiting');
     if (lbl)  lbl.textContent = 'OPEN IN XAMAN';
+    if (_xamanWaitTickHandle) { clearInterval(_xamanWaitTickHandle); _xamanWaitTickHandle = null; }
+    _xamanWaitStartedAt = 0;
 }
 
 function _xamanMarkOpenButtonWaiting() {
@@ -5509,17 +6241,38 @@ function _xamanMarkOpenButtonWaiting() {
     if (lbl)  lbl.textContent = 'WAITING FOR XAMAN...';
     var statusEl = document.getElementById('xaman-status');
     if (statusEl) statusEl.textContent = 'WAITING FOR XAMAN RESPONSE';
+
+    // Tick the status text with elapsed seconds so the user can see progress
+    // and knows the page isn't frozen. After 30s, change the messaging to
+    // suggest ABORT — a polite admission that something may be stuck.
+    _xamanWaitStartedAt = Date.now();
+    if (_xamanWaitTickHandle) clearInterval(_xamanWaitTickHandle);
+    _xamanWaitTickHandle = setInterval(function() {
+        var elapsed = Math.floor((Date.now() - _xamanWaitStartedAt) / 1000);
+        var statusNow = document.getElementById('xaman-status');
+        if (!statusNow) return;
+        if (elapsed < 30) {
+            statusNow.textContent = 'WAITING FOR XAMAN RESPONSE (' + elapsed + 's)';
+        } else {
+            statusNow.textContent = 'STILL WAITING (' + elapsed + 's) - TAP ABORT TO RETRY';
+        }
+    }, 1000);
 }
 
 // Anchor click handler — return false to block, true to let the deep link fire.
+// Disable SYNCHRONOUSLY (not via setTimeout) — on mobile, the deep link can
+// suspend or background the tab before a setTimeout(0) callback fires, leaving
+// the button visually still-clickable when the user returns from Xaman. The
+// click event has already been queued for default-action processing by the
+// time this handler runs, so adding pointer-events:none here doesn't cancel
+// the navigation that's about to happen.
 function onXamanOpenClick(ev) {
     var btn = document.getElementById('xaman-open-btn');
     if (btn && btn.classList.contains('is-waiting')) {
         if (ev && ev.preventDefault) ev.preventDefault();
         return false;
     }
-    // Mark waiting on the next tick so the browser still navigates the <a>.
-    setTimeout(_xamanMarkOpenButtonWaiting, 0);
+    _xamanMarkOpenButtonWaiting();
     return true;
 }
 
