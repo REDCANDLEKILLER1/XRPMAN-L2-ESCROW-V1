@@ -759,11 +759,11 @@
         <div style="margin-top:6px">
             <button onclick="xrpmanLogout()" style="width:auto;padding:5px 10px;font-size:.65em;background:#1a0000;border-color:#442222;color:#aa4444;letter-spacing:1px">&#10697; LOG OUT &amp; CLEAR SESSION</button>
         </div>
-        <div id="w_assets" class="hidden" style="margin-top:8px;border:1px solid #1a1a1a;background:#030303;padding:8px">
+        <div id="w_assets" class="hidden" style="margin-top:8px;border:1px solid #1a1a1a;background:#030303;padding:8px;max-width:100%;box-sizing:border-box;overflow-x:hidden">
             <div style="font-family:'Orbitron',monospace;font-size:.65em;color:var(--dim);margin-bottom:6px">PORTFOLIO</div>
-            <div id="w_xrp" style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #111">
-                <span style="color:var(--neon)">XRP <span style="color:#444;font-size:.8em">(L1 — NATIVE)</span></span>
-                <span id="w_xrp_bal" style="color:var(--neon)">0</span>
+            <div id="w_xrp" style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #111;gap:8px">
+                <span style="color:var(--neon);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">XRP <span style="color:#444;font-size:.8em">(L1 — NATIVE)</span></span>
+                <span id="w_xrp_bal" style="color:var(--neon);flex-shrink:0;font-variant-numeric:tabular-nums">0</span>
             </div>
             <div id="w_tokens"></div>
         </div>
@@ -1398,13 +1398,25 @@ function currencyToHex(code) {
 }
 function hexToCurrency(hex) {
     if (!hex) return '???';
-    if (hex.length <= 3) return hex;
+    if (hex.length <= 3) return hex; // standard 3-char codes like XRP/USD
+    // Decode 40-char hex currency codes (XLS-15) into a printable name.
+    // Many on-chain currency hex blobs contain garbage / null padding /
+    // HTML-significant bytes past the actual name. Rendering those bytes
+    // verbatim into the DOM produces fake "injection-looking" characters
+    // (e.g.  ';">  next to GRABS, EUROP, BTC) which are alarming and
+    // make the UI look broken. Decode strictly: stop at the first byte
+    // that's null, control-character, non-ASCII, or HTML-dangerous.
     var str = '';
     for (var i = 0; i < hex.length; i += 2) {
         var b = parseInt(hex.substr(i, 2), 16);
-        if (b === 0) break;
+        if (isNaN(b) || b === 0) break;            // null = end of string
+        if (b < 0x20 || b > 0x7E) break;            // control / non-ASCII
+        if (b === 0x3C || b === 0x3E ||             // < >
+            b === 0x22 || b === 0x27 ||             // " '
+            b === 0x26 || b === 0x60) break;        // & `
         str += String.fromCharCode(b);
     }
+    str = str.replace(/^\s+|\s+$/g, '');             // trim whitespace
     return str || hex.slice(0, 8) + '...';
 }
 function truncAddr(a) { return a ? a.slice(0, 6) + '...' + a.slice(-4) : '???'; }
@@ -1416,7 +1428,15 @@ function tokenIcon(issuer, currencyName, size) {
     if (!issuer) return '';
     var url = 'https://xumm.app/avatar/' + issuer + '_200.png';
     var cls = 'tok-ic' + (size === 'lg' ? ' tok-ic-lg' : '');
-    var initial = (currencyName || '??').slice(0, 2).toUpperCase();
+    // Defense in depth: even though hexToCurrency strips HTML-significant
+    // bytes upstream, force the fallback initial through a hard whitelist
+    // here too. The initial gets injected into an inline JS string inside
+    // an onerror= attribute (escaped-quotes nest deep) so a stray quote
+    // would be catastrophic. Whitelist alphanumerics + a few token-name
+    // symbols and pad short results.
+    var rawInitial = (currencyName || '??').slice(0, 2).toUpperCase();
+    var initial = rawInitial.replace(/[^A-Z0-9_+\-.*$]/g, '');
+    if (initial.length < 1) initial = '??';
     // On error, swap the <img> with a styled letter fallback in the same slot
     var fallback = 'this.onerror=null;' +
         'this.outerHTML=\'<span class=\"' + cls + ' tok-ic-fallback\">' + initial + '</span>\';';
@@ -2473,12 +2493,17 @@ async function refreshWallet(silent) {
             });
 
             var balColor = bal > 0 ? 'var(--neon)' : '#444';
-            tokensHtml += '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #111">' +
-                '<span style="color:' + balColor + ';display:flex;align-items:center;min-width:0">' +
+            // Defense in depth: even though hexToCurrency now strips
+            // HTML-dangerous bytes, run escapeHtml on the name before
+            // concatenating it into innerHTML so any future change to
+            // the decoder can't accidentally regress this.
+            var safeName = escapeHtml(name);
+            tokensHtml += '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #111;gap:8px">' +
+                '<span style="color:' + balColor + ';display:flex;align-items:center;min-width:0;flex:1;overflow:hidden">' +
                 tokenIcon(line.account, name) +
-                '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name +
+                '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">' + safeName +
                 ' <span style="color:#333;font-size:.75em">(L2 — ' + truncAddr(line.account) + ')</span></span></span>' +
-                '<span style="color:' + balColor + ';flex-shrink:0">' + bal.toLocaleString(undefined, {maximumFractionDigits: 6}) + '</span>' +
+                '<span style="color:' + balColor + ';flex-shrink:0;font-variant-numeric:tabular-nums">' + bal.toLocaleString(undefined, {maximumFractionDigits: 6}) + '</span>' +
                 '</div>';
 
             if (!silent && bal > 0) lg('L2: ' + name + ' — ' + line.balance + ' (issuer: ' + truncAddr(line.account) + ')', 'inf');
