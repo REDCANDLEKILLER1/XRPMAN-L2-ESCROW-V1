@@ -4405,37 +4405,115 @@ async function restoreFromChain() {
             if (!marker || txs.length === 0) break;
         }
         lg('Restore scan: pulled ' + allTxs.length + ' tx from primary history.', 'inf');
+        lg('Restore scan: examining each tx for XRPMAN ESCROW LOCK memos...', 'inf');
 
-        // Step 2: filter to our CheckCreate locks (signed by primary, with
-        // the XRPMAN ESCROW LOCK memo prefix).
-        var locks = [];
+        // Counters so we can summarise what we saw
+        var _scanCounts = { totalTx: allTxs.length, withMemos: 0, ourMemos: 0, byType: {}, lazyEnrich: 0, parseRejected: 0 };
+
+        // Step 2: scan ALL tx types for our memo prefix and dedupe by
+        // vault address. Xaman strips memos from primary-signed txs (fund
+        // Payment + CheckCreate), so the memo only survives reliably on
+        // the locally-signed CheckCash. We also harvest currency/issuer
+        // from whichever tx type provides it (CheckCreate's SendMax or
+        // CheckCash's Amount).
+        var locksByVault = {};
         allTxs.forEach(function(t) {
-            var tx = t.tx_json || t.tx || t.transaction || {};
+            // Mirror the working explorer's fallback chain — last-resort
+            // is the item itself in case xrpl.js drops the wrapper.
+            var tx = t.tx_json || t.tx || t.transaction || t;
             var meta = t.meta || {};
-            if (tx.TransactionType !== 'CheckCreate') return;
-            if (tx.Account !== wallet.address) return;
             if ((meta.TransactionResult || '') !== 'tesSUCCESS') return;
-            // Decode memos
+
+            var hash = t.hash || tx.hash || '';
+            var txDateMs = (tx.date != null) ? (tx.date + 946684800) * 1000 : Date.now();
+            var txType = tx.TransactionType || '?';
+            _scanCounts.byType[txType] = (_scanCounts.byType[txType] || 0) + 1;
+
+            // (a) Try to extract our escrow memo from this tx's Memos array.
             var memos = tx.Memos || [];
+            if (memos.length > 0) _scanCounts.withMemos++;
+            var parsed = null;
+            var memoTextSeen = null;
             for (var i = 0; i < memos.length; i++) {
                 var memo = memos[i].Memo || {};
                 if (!memo.MemoData) continue;
                 var text = _hexToUtf8(memo.MemoData);
-                var parsed = _parseEscrowMemo(text);
-                if (parsed) {
-                    parsed.txHash = t.hash || tx.hash;
-                    parsed.createdAt = (tx.date != null) ? (tx.date + 946684800) * 1000 : Date.now();
-                    // SendMax has the actual currency hex + issuer
-                    var sm = tx.SendMax;
-                    if (sm && typeof sm === 'object') {
-                        parsed.currencyHex = sm.currency;
-                        parsed.issuer = sm.issuer;
-                    }
-                    locks.push(parsed);
-                    break;
+                memoTextSeen = text;
+                parsed = _parseEscrowMemo(text);
+                if (parsed) break;
+            }
+
+            // Diagnostic: log any memo that mentions XRPMAN even if our
+            // parser rejected it (would catch format drift between versions)
+            if (memoTextSeen && /XRPMAN/i.test(memoTextSeen) && !parsed) {
+                _scanCounts.parseRejected++;
+                lg('  [SKIP] memo on ' + txType + ' ' + (hash.slice(0,12) || '?') + ': "' + memoTextSeen.slice(0, 80) + '..." — does not match parser format', 'inf');
+            }
+
+            // (b) Even if no memo, certain primary-signed CheckCreate txs
+            // implicitly identify a vault by Destination. We harvest those
+            // for currency/issuer enrichment of memo-matched records.
+            if (!parsed && tx.TransactionType === 'CheckCreate' && tx.Account === wallet.address && tx.Destination) {
+                // Lazy enrichment: stash by destination, used only if we
+                // also see a memo-bearing tx for the same vault.
+                var enrich = locksByVault[tx.Destination] = locksByVault[tx.Destination] || { vaultAddress: tx.Destination, _enrichOnly: true };
+                if (tx.SendMax && typeof tx.SendMax === 'object') {
+                    enrich.currencyHex = enrich.currencyHex || tx.SendMax.currency;
+                    enrich.issuer      = enrich.issuer      || tx.SendMax.issuer;
                 }
+                if (!enrich.txHash) enrich.txHash = hash;
+                if (!enrich.createdAt) enrich.createdAt = txDateMs;
+                _scanCounts.lazyEnrich++;
+                return;
+            }
+
+            if (!parsed) return;
+
+            // Found a memo. Merge into bucket keyed by vault address.
+            _scanCounts.ourMemos++;
+            var alreadyHadBucket = !!locksByVault[parsed.vaultAddress] && locksByVault[parsed.vaultAddress]._memoFound;
+            var bucket = locksByVault[parsed.vaultAddress] || {};
+            // Memo fields always win
+            bucket.vaultAddress = parsed.vaultAddress;
+            bucket.amount       = parsed.amount;
+            bucket.tokenName    = parsed.tokenName;
+            bucket.unlockMs     = parsed.unlockMs;
+            bucket.unlockISO    = parsed.unlockISO;
+            bucket._memoFound   = true;
+            delete bucket._enrichOnly;
+
+            // Currency/issuer: prefer CheckCreate's SendMax (most reliable).
+            // Fall back to CheckCash's Amount object.
+            if (tx.TransactionType === 'CheckCreate' && tx.SendMax && typeof tx.SendMax === 'object') {
+                bucket.currencyHex = tx.SendMax.currency;
+                bucket.issuer      = tx.SendMax.issuer;
+            } else if (tx.TransactionType === 'CheckCash' && tx.Amount && typeof tx.Amount === 'object') {
+                bucket.currencyHex = bucket.currencyHex || tx.Amount.currency;
+                bucket.issuer      = bucket.issuer      || tx.Amount.issuer;
+            }
+
+            // createdAt: prefer earliest tx of the bundle (Payment < CheckCreate < CheckCash)
+            if (!bucket.createdAt || txDateMs < bucket.createdAt) bucket.createdAt = txDateMs;
+            if (!bucket.txHash) bucket.txHash = hash;
+
+            locksByVault[parsed.vaultAddress] = bucket;
+
+            // Diagnostic per-match log
+            if (alreadyHadBucket) {
+                lg('  [DEDUPE] +' + txType + ' for vault ' + truncAddr(parsed.vaultAddress) + ' (already counted)', 'inf');
+            } else {
+                lg('  [MATCH] ' + txType + ' ' + parsed.amount + ' ' + parsed.tokenName + ' → vault ' + truncAddr(parsed.vaultAddress) + ' unlock ' + parsed.unlockISO, 'succ');
             }
         });
+
+        // Drop any entries that only have CheckCreate enrichment but no
+        // memo match (unrelated outbound CheckCreates).
+        var locks = Object.keys(locksByVault).map(function(k) { return locksByVault[k]; }).filter(function(b) { return b._memoFound; });
+
+        // Diagnostic summary
+        var typeBreakdown = Object.keys(_scanCounts.byType).map(function(k) { return k + ':' + _scanCounts.byType[k]; }).join(' ');
+        lg('Restore scan summary: ' + _scanCounts.totalTx + ' tx (' + typeBreakdown + ')', 'inf');
+        lg('  ' + _scanCounts.withMemos + ' tx had memos · ' + _scanCounts.ourMemos + ' matched our format · ' + _scanCounts.parseRejected + ' rejected · ' + _scanCounts.lazyEnrich + ' CheckCreates lazy-enriched', 'inf');
 
         if (locks.length === 0) {
             statusEl.textContent = 'No XRPMAN escrow locks found in last ' + allTxs.length + ' tx of ' + truncAddr(wallet.address) + '.';
@@ -7426,85 +7504,4 @@ var TUTORIAL_STEPS = [
 ];
 
 var _tutStep = 0;
-var _tutShouldFollowTabs = false; // only true on first-boot walkthrough
-function openTutorial(fromStart) {
-    _tutStep = 0;
-    _tutShouldFollowTabs = !!fromStart;
-    document.getElementById('tutorial-overlay').style.display = 'flex';
-    renderTutStep();
-}
-function closeTutorial() {
-    document.getElementById('tutorial-overlay').style.display = 'none';
-    _tutShouldFollowTabs = false;
-    try { localStorage.setItem('xmeme_tutorial_seen', '1'); } catch(e) {}
-}
-function tutBack() {
-    if (_tutStep > 0) { _tutStep--; renderTutStep(); }
-}
-function tutNext() {
-    if (_tutStep < TUTORIAL_STEPS.length - 1) {
-        _tutStep++;
-        renderTutStep();
-    } else {
-        // Final step: finish
-        closeTutorial();
-        // Jump to the wallet tab to begin
-        setMainTab('wallet');
-    }
-}
-function tutSkip() { closeTutorial(); }
-function renderTutStep() {
-    var s = TUTORIAL_STEPS[_tutStep];
-    if (!s) return;
-    document.getElementById('tut-step-label').textContent = s.label;
-    document.getElementById('tut-icon').textContent = s.num;
-    document.getElementById('tut-title').textContent = s.title;
-    document.getElementById('tut-desc').textContent = s.desc;
-    document.getElementById('tut-hint').innerHTML = s.hint;
-
-    // Progress dots
-    var prog = document.getElementById('tut-progress');
-    var html = '';
-    for (var i = 0; i < TUTORIAL_STEPS.length; i++) {
-        var cls = i < _tutStep ? 'tut-dot done' : i === _tutStep ? 'tut-dot active' : 'tut-dot';
-        html += '<div class="' + cls + '"></div>';
-    }
-    prog.innerHTML = html;
-
-    // Back button state
-    var backBtn = document.getElementById('tut-back');
-    backBtn.style.visibility = _tutStep === 0 ? 'hidden' : 'visible';
-
-    // Next button: last step becomes "GET STARTED"
-    var nextBtn = document.getElementById('tut-next');
-    if (_tutStep === TUTORIAL_STEPS.length - 1) {
-        nextBtn.textContent = 'GET STARTED';
-        nextBtn.className = 'tut-finish';
-    } else {
-        nextBtn.innerHTML = 'NEXT &rsaquo;';
-        nextBtn.className = 'tut-next';
-    }
-
-    // Only auto-follow tabs on first-boot walkthrough — not when user re-opens mid-session
-    if (_tutShouldFollowTabs && s.tab) {
-        setMainTab(s.tab);
-    }
-}
-
-// Auto-open tutorial on first visit (after splash dismisses)
-function maybeShowTutorialAfterSplash() {
-    try {
-        var seen = localStorage.getItem('xmeme_tutorial_seen');
-        if (!seen) setTimeout(function() { openTutorial(true); }, 600);
-    } catch(e) {}
-}
-
-setTimeout(function() {
-    var el = document.getElementById('xrpman-line');
-    if (el && !el.textContent && _xrpmanPool.length === 0) {
-        startXrpmanAssistant();
-    }
-}, 3500);
-</script>
-</body>
-</html>
+var _tutShouldFollowTabs = false; // only 
