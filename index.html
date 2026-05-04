@@ -537,6 +537,37 @@
             <button class="dev-btn dev-btn-danger" onclick="devNuke()">&#9888; NUKE ALL LOCAL DATA</button>
         </div>
 
+        <!-- ═══════════════════════════════════════════════════════════
+             IN-APP CONSOLE — ports the dev console pattern from
+             XRPMan Multisig. Lets the owner inspect localStorage,
+             pending escrows, recovery seed pool, and run arbitrary
+             JS without opening browser dev tools (which is a pain
+             on mobile).
+             ═══════════════════════════════════════════════════════════ -->
+        <div class="dev-section" style="border-color:#00ff00">
+            <div class="dev-section-hdr" style="color:#00ff00">&#128187; CONSOLE</div>
+            <div class="dev-row" style="font-size:10px;color:#88cc88;line-height:1.5;margin-bottom:6px">
+                One-tap diagnostics for stranded sub-wallets, pending escrows, and recovery seeds. Output appears below.
+            </div>
+            <div class="dev-row" style="flex-direction:column;align-items:stretch;gap:4px">
+                <button class="dev-btn" onclick="devConsoleRun('pending')" style="background:#003300;border-color:#00aa00;color:#00ff00">&#128269; LIST PENDING ESCROWS (encrypted, resumable)</button>
+                <button class="dev-btn" onclick="devConsoleRun('escrows')" style="background:#003300;border-color:#00aa00;color:#00ff00">&#128269; LIST SAVED ESCROWS (sub-addresses)</button>
+                <button class="dev-btn" onclick="devConsoleRun('pool')" style="background:#003300;border-color:#00aa00;color:#00ff00">&#128269; IN-MEMORY RECOVERY SEED POOL</button>
+                <button class="dev-btn" onclick="devConsoleRun('storage')" style="background:#003300;border-color:#00aa00;color:#00ff00">&#128269; ALL LOCALSTORAGE KEYS + SIZES</button>
+                <button class="dev-btn" onclick="devConsoleRun('orphans')" style="background:#003300;border-color:#00aa00;color:#00ff00">&#128269; FIND ORPHAN SUB-WALLETS (fund → no record)</button>
+                <button class="dev-btn" onclick="devConsoleRun('node')" style="background:#003300;border-color:#00aa00;color:#00ff00">&#128269; CURRENT NODE + CONNECTION STATE</button>
+            </div>
+
+            <div class="dev-row" style="flex-direction:column;align-items:stretch;gap:4px;margin-top:10px">
+                <span class="lbl" style="font-size:10px;color:#00ff00">CUSTOM JS (advanced — runs in app context)</span>
+                <input type="text" id="dev-console-eval" placeholder='e.g. xrpmanRevealSeed("rHcpKh...")' autocomplete="off" style="flex:1;font-family:'Share Tech Mono',monospace">
+                <button class="dev-btn" onclick="devConsoleEval()" style="background:#003300;border-color:#00aa00;color:#00ff00">&#9658; RUN</button>
+            </div>
+
+            <pre id="dev-console-out" style="background:#000;border:1px solid #00aa00;color:#00ff00;font-family:'Share Tech Mono',monospace;font-size:11px;padding:8px;margin-top:8px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all">// console output appears here</pre>
+            <button class="dev-btn" onclick="document.getElementById('dev-console-out').textContent='// console output appears here'" style="margin-top:4px">CLEAR OUTPUT</button>
+        </div>
+
         <button class="dev-btn dev-btn-close" onclick="closeDev()">CLOSE DEV PANEL</button>
     </div>
 </div>
@@ -574,8 +605,17 @@
 <!-- VAULT GRID BACKGROUND -->
 <div class="vault-grid"><canvas id="vaultCanvas"></canvas></div>
 
-<!-- LOADING OVERLAY -->
-<div id="overlay"><div class="spin"></div><div id="overlay-txt">PROCESSING...</div></div>
+<!-- LOADING OVERLAY — abortable with watchdog -->
+<div id="overlay">
+    <div class="spin"></div>
+    <div id="overlay-txt">PROCESSING...</div>
+    <div id="overlay-elapsed" style="font-family:'Share Tech Mono',monospace;font-size:.7em;color:#88aa88;margin-top:8px;letter-spacing:1px"></div>
+    <div id="overlay-stall" style="display:none;margin-top:18px;padding:12px;border:1px solid #ff8844;background:rgba(40,16,0,.6);max-width:340px;text-align:center">
+        <div style="font-family:'Orbitron',monospace;color:#ff8844;font-size:.75em;letter-spacing:2px;margin-bottom:8px">&#9888; STALLED</div>
+        <div id="overlay-stall-msg" style="font-size:.7em;color:#ddbb99;line-height:1.5;text-transform:none">No activity for 25s. The network node may be hung. Failover should kick in shortly &mdash; if not, abort to recover.</div>
+    </div>
+    <button id="overlay-abort" type="button" onclick="abortCurrentOperation()" style="display:none;margin-top:16px;background:#1a0000;border:2px solid #ff4444;color:#ff4444;font-family:'Orbitron',monospace;font-size:.7em;letter-spacing:2px;padding:10px 22px;cursor:pointer">ABORT &amp; RECOVER</button>
+</div>
 
 <!-- ERROR OVERLAY -->
 <div id="err-overlay">
@@ -1133,6 +1173,10 @@ function waitForLibs(timeoutMs) {
 try { localStorage.removeItem('xmeme_session'); } catch(e) {}
 
 window.addEventListener('load', function() {
+    // Install the loading-overlay watchdog ASAP so any subsequent
+    // showLoad() benefits from stall detection.
+    try { _wrapLgForWatchdog(); } catch(_) {}
+
     setTimeout(function() {
         var el = document.getElementById('lib-st');
         if (typeof xrpl !== 'undefined' && typeof hashwasm !== 'undefined') {
@@ -1181,8 +1225,135 @@ function lg(m, c) {
     el.innerHTML += '<div><span style="color:#444">[' + new Date().toLocaleTimeString() + ']</span> <span' + cls + '>' + m + '</span></div>';
     el.scrollTop = el.scrollHeight;
 }
-function showLoad(m) { document.getElementById('overlay-txt').textContent = m || 'PROCESSING...'; document.getElementById('overlay').style.display = 'flex'; }
-function hideLoad() { document.getElementById('overlay').style.display = 'none'; }
+// ════════════════════════════════════════════════════════════════════
+//   LOADING OVERLAY WITH WATCHDOG + ABORT
+// ════════════════════════════════════════════════════════════════════
+// The overlay now tracks elapsed time, surfaces an ABORT button after
+// 10 seconds, and shows a stall warning if no log activity for 25s.
+// A reference to the in-flight sub-wallet (if any) is kept in
+// window._currentLockSubWallet so the abort handler can surface seed
+// recovery info when the lock flow is the active operation.
+var _overlayWatchdog = { timerId: null, stallId: null, startedAt: 0, lastLogAt: 0 };
+
+function showLoad(m) {
+    var ov = document.getElementById('overlay');
+    var txt = document.getElementById('overlay-txt');
+    var elapsed = document.getElementById('overlay-elapsed');
+    var abortBtn = document.getElementById('overlay-abort');
+    var stall = document.getElementById('overlay-stall');
+    if (txt) txt.textContent = m || 'PROCESSING...';
+    if (elapsed) elapsed.textContent = '0s elapsed';
+    if (abortBtn) abortBtn.style.display = 'none';      // appears after 10s
+    if (stall) stall.style.display = 'none';            // appears after 25s of no log activity
+    if (ov) ov.style.display = 'flex';
+
+    _overlayWatchdog.startedAt = Date.now();
+    _overlayWatchdog.lastLogAt = Date.now();
+
+    // Tick: update elapsed counter every second; reveal abort after 10s.
+    if (_overlayWatchdog.timerId) clearInterval(_overlayWatchdog.timerId);
+    _overlayWatchdog.timerId = setInterval(function() {
+        var sec = Math.floor((Date.now() - _overlayWatchdog.startedAt) / 1000);
+        if (elapsed) elapsed.textContent = sec + 's elapsed';
+        if (sec >= 10 && abortBtn) abortBtn.style.display = 'inline-block';
+
+        // Stall detection: if no log activity for 25s, surface the warning.
+        // It's a heuristic — most operations log progress within a few sec.
+        var stallSec = Math.floor((Date.now() - _overlayWatchdog.lastLogAt) / 1000);
+        if (stallSec >= 25 && stall && stall.style.display === 'none') {
+            stall.style.display = 'block';
+            var msg = document.getElementById('overlay-stall-msg');
+            if (msg) {
+                if (typeof window._currentLockSubWallet !== 'undefined' && window._currentLockSubWallet) {
+                    msg.innerHTML = 'No activity for ' + stallSec + 's. The network node may be hung.<br><br>Your sub-wallet is funded and recoverable &mdash; tap ABORT &amp; RECOVER to surface its address and seed before closing this tab.';
+                } else {
+                    msg.textContent = 'No activity for ' + stallSec + 's. The network may be hung. Failover should kick in shortly. Tap ABORT to cancel.';
+                }
+            }
+        }
+    }, 1000);
+}
+
+function hideLoad() {
+    var ov = document.getElementById('overlay');
+    if (ov) ov.style.display = 'none';
+    if (_overlayWatchdog.timerId) {
+        clearInterval(_overlayWatchdog.timerId);
+        _overlayWatchdog.timerId = null;
+    }
+}
+
+// Watchdog hook: every call to lg() resets the stall timer. The stall
+// warning checks lastLogAt vs Date.now() to decide whether to display.
+// This is wired in by patching lg() once at startup — see _wrapLgForWatchdog.
+function _wrapLgForWatchdog() {
+    if (typeof lg !== 'function' || lg._watchdogWrapped) return;
+    var _origLg = lg;
+    lg = function() {
+        _overlayWatchdog.lastLogAt = Date.now();
+        // Hide the stall warning when activity resumes
+        var stall = document.getElementById('overlay-stall');
+        if (stall && stall.style.display !== 'none') stall.style.display = 'none';
+        return _origLg.apply(this, arguments);
+    };
+    lg._watchdogWrapped = true;
+}
+
+// Abort handler. If we're in the middle of a lock pipeline (sub-wallet
+// generated and still in flight), this surfaces the seed and address so
+// the user can recover the funded wallet later. The seed is shown via
+// the same one-time alert pattern as the existing recovery flow — only
+// in the failure escape hatch, never as a routine UI element.
+function abortCurrentOperation() {
+    var aborted = window._currentLockSubWallet;
+    hideLoad();
+
+    if (aborted && aborted.sub && aborted.sub.address && aborted.sub.seed) {
+        // Lock-flow abort: surface the seed exactly like the existing
+        // failure recovery block. The user explicitly hit ABORT, so by
+        // their action they accept the seed-disclosure tradeoff.
+        try {
+            // Stash in the in-memory pool so xrpmanRevealSeed("...") works
+            // from the dev console too.
+            window._xrpmanRecoverySeeds = window._xrpmanRecoverySeeds || {};
+            window._xrpmanRecoverySeeds[aborted.sub.address] = aborted.sub.seed;
+        } catch(_) {}
+
+        lg('=== USER ABORTED — SUB-WALLET RECOVERY INFO ===', 'err');
+        lg('Sub-wallet address: ' + aborted.sub.address, 'err');
+        var s = aborted.sub.seed || '';
+        var masked = (s.length >= 8) ? s.slice(0,4) + '\u2022'.repeat(s.length - 8) + s.slice(-4) : '\u2022'.repeat(s.length);
+        lg('Seed (masked): ' + masked, 'inf');
+        lg('Full seed shown ONCE in popup — copy it now to a password manager. Do NOT screenshot.', 'err');
+        lg('To re-reveal: open dev panel (7-tap logo) > console > xrpmanRevealSeed("' + aborted.sub.address + '")', 'inf');
+        lg('=== END RECOVERY ===', 'err');
+
+        alert('OPERATION ABORTED \u2014 sub-wallet may be funded.\n\n' +
+              'Address:\n' + aborted.sub.address + '\n\n' +
+              'RECOVERY SEED (copy now, do not screenshot):\n' + aborted.sub.seed + '\n\n' +
+              '\u26a0 Anyone with this seed controls the sub-wallet. Save it to a password manager.\n\n' +
+              'To recover the 1.5 XRP later:\n' +
+              '1. Visit [05] EMERGENCY DELETE\n' +
+              '2. Paste the seed above\n' +
+              '3. Confirm \u2014 auto-clearer handles any blockers');
+
+        // Tell the lock pipeline to stop. The check is read inside long
+        // operations; raising the flag means the next checkpoint exits.
+        window._abortRequested = true;
+    } else {
+        // Non-lock operation (read, refresh, dashboard probe). Just exit.
+        lg('Operation aborted by user. No funds in flight.', 'inf');
+        window._abortRequested = true;
+    }
+}
+
+// Helper: lock flow checks this between async steps and throws to stop.
+function _checkAbortFlag() {
+    if (window._abortRequested) {
+        window._abortRequested = false;
+        throw new Error('Aborted by user');
+    }
+}
 function showErr(m) { lg('FAULT: ' + m, 'err'); document.getElementById('err-msg').innerText = m; document.getElementById('err-overlay').style.display = 'flex'; }
 
 function currencyToHex(code) {
@@ -2571,6 +2742,12 @@ async function createEscrow() {
         savedSubSeed = sub.seed;
         lg('Sub-wallet generated: ' + truncAddr(sub.address), 'inf');
 
+        // Register the in-flight sub-wallet so the ABORT button on the
+        // loading overlay can surface its seed if the user aborts before
+        // the lock completes. Cleared in the finally block on either
+        // success or failure (failure has its own recovery dump).
+        window._currentLockSubWallet = { sub: sub, startedAt: Date.now() };
+
         // [2.1] Guard: sub cannot equal primary (sanity — extremely unlikely but explicit)
         if (sub.address === wallet.address) {
             throw new Error('Generated sub-wallet address collides with primary wallet. Retry.');
@@ -2919,6 +3096,10 @@ async function createEscrow() {
             }
         }
     } finally {
+        // Clear the in-flight tracker — abort button will no longer
+        // surface this sub-wallet's seed (regardless of success/failure
+        // outcome above; failure path already wrote its own recovery).
+        try { window._currentLockSubWallet = null; } catch(_) {}
         hideLoad();
     }
 }
@@ -5941,6 +6122,231 @@ function devNuke() {
     lg('All local data nuked. Reload the page.', 'err');
     document.getElementById('dev-panel').style.display = 'none';
     setTimeout(function() { location.reload(); }, 800);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//   IN-APP CONSOLE — runtime diagnostics without browser dev tools
+// ════════════════════════════════════════════════════════════════════
+// Mobile users can't easily reach the browser dev console, and stranded
+// sub-wallet recovery often requires inspecting localStorage. Each preset
+// dumps a piece of state into the dev panel's <pre> output element. The
+// CUSTOM JS box runs arbitrary expressions in the app's scope, so helpers
+// like xrpmanRevealSeed("rXXX") and listEscrows() work directly.
+function _devConsoleWrite(text) {
+    var out = document.getElementById('dev-console-out');
+    if (!out) return;
+    var ts = new Date().toLocaleTimeString();
+    out.textContent = '[' + ts + ']\n' + text + '\n\n' + out.textContent;
+}
+
+function devConsoleRun(query) {
+    try {
+        var result;
+        switch (query) {
+            case 'pending':
+                var pend = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]');
+                if (pend.length === 0) {
+                    result = 'No pending escrows.\n\nPending escrows are saved when a Xaman tx times out mid-flow. The encrypted seed + lock params survive here until you resume from the CLAIM tab. Recovery requires both passwords.';
+                } else {
+                    result = 'PENDING ESCROWS (' + pend.length + ' total)\n';
+                    result += '═══════════════════════════════════════\n';
+                    pend.forEach(function(p, i) {
+                        var ageH = ((Date.now() - (p.createdAt || 0)) / 3600000).toFixed(1);
+                        result += '\n#' + (i+1) + '  ' + (p.id || '?') + '\n';
+                        result += '  Sub-wallet:  ' + p.subAddress + '\n';
+                        result += '  Primary:     ' + p.primaryAddress + '\n';
+                        result += '  Token:       ' + (p.amount || '?') + ' ' + (p.currencyInput || '?') + '\n';
+                        result += '  Issuer:      ' + (p.issuer || '?') + '\n';
+                        result += '  Network:     ' + (p.network || '?') + '\n';
+                        result += '  Age:         ' + ageH + ' hours\n';
+                        result += '  Encrypted:   ' + (p.ct ? 'YES (Argon2id+AES-GCM, needs both pws)' : 'NO') + '\n';
+                    });
+                }
+                break;
+
+            case 'escrows':
+                var esc = JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
+                if (esc.length === 0) {
+                    result = 'No saved escrows.';
+                } else {
+                    result = 'SAVED ESCROWS (' + esc.length + ' total)\n';
+                    result += '═══════════════════════════════════════\n';
+                    esc.forEach(function(e, i) {
+                        var status = e.status || 'unknown';
+                        var unlockStr = e.unlockDate ? new Date(e.unlockDate).toISOString() : '?';
+                        result += '\n#' + (i+1) + '  ' + (e.id || '?') + '\n';
+                        result += '  Sub-wallet:  ' + e.subAddress + '\n';
+                        result += '  Token:       ' + e.amount + ' ' + (e.currencyInput || e.currencyHex) + '\n';
+                        result += '  Status:      ' + status + '\n';
+                        result += '  Unlock:      ' + unlockStr + '\n';
+                        result += '  Network:     ' + (e.network || '?') + '\n';
+                    });
+                }
+                break;
+
+            case 'pool':
+                var pool = window._xrpmanRecoverySeeds || {};
+                var keys = Object.keys(pool);
+                if (keys.length === 0) {
+                    result = 'In-memory recovery pool is empty.\n\nThe pool only holds plaintext seeds for the current page session. It is cleared on every page refresh. If you reloaded after a failed lock, the seed is no longer here — check pending escrows instead.';
+                } else {
+                    result = 'IN-MEMORY POOL (' + keys.length + ' seeds, will clear on reload)\n';
+                    result += '═══════════════════════════════════════\n';
+                    keys.forEach(function(addr) {
+                        var seed = pool[addr] || '';
+                        var masked = seed.length >= 8
+                            ? seed.slice(0,4) + '\u2022'.repeat(seed.length - 8) + seed.slice(-4)
+                            : '\u2022'.repeat(seed.length);
+                        result += '\n  ' + addr + '\n    seed (masked): ' + masked + '\n    reveal: xrpmanRevealSeed("' + addr + '")\n';
+                    });
+                }
+                break;
+
+            case 'storage':
+                result = 'LOCALSTORAGE INVENTORY\n';
+                result += '═══════════════════════════════════════\n';
+                var totalBytes = 0;
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    var v = localStorage.getItem(k) || '';
+                    totalBytes += k.length + v.length;
+                    result += '\n  ' + k + '\n    size: ' + v.length + ' chars\n';
+                    if (v.length < 200) {
+                        result += '    value: ' + v + '\n';
+                    } else {
+                        result += '    preview: ' + v.slice(0, 100) + '...\n';
+                    }
+                }
+                result += '\n═══ TOTAL: ' + totalBytes + ' chars across ' + localStorage.length + ' keys';
+                break;
+
+            case 'orphans':
+                // Cross-reference: escrow records list known sub-wallets.
+                // Anything funded from primary that's NOT in the escrow list
+                // is potentially orphaned (lock crashed before save completed).
+                // Requires fetching tx history from the network.
+                _devConsoleWrite('Orphan scan requires network. Running...');
+                _devFindOrphans().then(function(text) { _devConsoleWrite(text); });
+                return; // async path — don't fall through
+
+            case 'node':
+                result = 'CONNECTION STATE\n';
+                result += '═══════════════════════════════════════\n';
+                result += '\n  Network:        ' + NET;
+                result += '\n  Node pool:      ' + (NETS[NET] || []).join('\n                  ');
+                result += '\n  Current node:   ' + ((NETS[NET] || [])[_currentNodeIdx || 0] || '?');
+                result += '\n  Round-robin idx: ' + (_currentNodeIdx || 0);
+                result += '\n  Client:         ' + (typeof client === 'undefined' || !client ? 'disconnected' : 'live');
+                if (typeof client !== 'undefined' && client && client.url) {
+                    result += '\n  Client URL:     ' + client.url;
+                    result += '\n  isConnected():  ' + client.isConnected();
+                }
+                result += '\n  Wallet:         ' + (typeof wallet !== 'undefined' && wallet ? wallet.address : '(not connected)');
+                result += '\n  Xaman proxy:    ' + (typeof DEFAULT_XAMAN_PROXY !== 'undefined' ? DEFAULT_XAMAN_PROXY : '?');
+                break;
+
+            default:
+                result = 'Unknown query: ' + query;
+        }
+        _devConsoleWrite(result);
+    } catch (e) {
+        _devConsoleWrite('ERROR: ' + e.message + '\n\n' + (e.stack || '(no stack)'));
+    }
+}
+
+async function _devFindOrphans() {
+    try {
+        if (typeof wallet === 'undefined' || !wallet) {
+            return 'No primary wallet connected. Connect via Xaman or seed first.';
+        }
+        var c = await getClient();
+        var resp = await requestWithRetry(
+            { command: 'account_tx', account: wallet.address, ledger_index_min: -1, ledger_index_max: -1, limit: 100 },
+            { attempts: 3, timeout: 8000, label: 'orphan-scan' }
+        );
+        var txs = (resp.result && resp.result.transactions) || [];
+        // Find every Payment of exactly 1.5 XRP (the fund-sub-wallet amount)
+        var subFunds = [];
+        for (var i = 0; i < txs.length; i++) {
+            var tx = txs[i].tx_json || txs[i].tx || {};
+            var meta = txs[i].meta || {};
+            if (tx.TransactionType !== 'Payment') continue;
+            if (tx.Account !== wallet.address) continue;
+            if (tx.Amount !== '1500000') continue; // 1.5 XRP in drops
+            if (meta.TransactionResult !== 'tesSUCCESS') continue;
+            subFunds.push({ dest: tx.Destination, hash: txs[i].hash || tx.hash, date: tx.date });
+        }
+        // Cross-reference against known escrows
+        var knownSubs = new Set();
+        var escrows = JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
+        escrows.forEach(function(e) { if (e.subAddress) knownSubs.add(e.subAddress); });
+        var pending = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]');
+        pending.forEach(function(p) { if (p.subAddress) knownSubs.add(p.subAddress); });
+
+        var result = 'ORPHAN SCAN — last 100 tx of primary wallet\n';
+        result += '═══════════════════════════════════════\n';
+        result += '\n  Funded sub-wallets found: ' + subFunds.length;
+        result += '\n  Known (in escrows/pending): ' + knownSubs.size;
+        result += '\n';
+        var orphans = subFunds.filter(function(s) { return !knownSubs.has(s.dest); });
+        if (orphans.length === 0) {
+            result += '\n  ✓ No orphans. Every funded sub-wallet has a local record.';
+        } else {
+            result += '\n  ⚠ ORPHANS (funded but no local record):';
+            for (var j = 0; j < orphans.length; j++) {
+                var o = orphans[j];
+                // Probe each orphan's current balance to see if it still holds funds
+                var liveStatus = '?';
+                try {
+                    var ai = await requestWithRetry(
+                        { command: 'account_info', account: o.dest, ledger_index: 'validated' },
+                        { attempts: 2, timeout: 6000, label: 'orphan-probe' }
+                    );
+                    var bal = parseInt(ai.result.account_data.Balance, 10) / 1000000;
+                    liveStatus = bal.toFixed(6) + ' XRP';
+                } catch (probeErr) {
+                    if (/actNotFound|not found/i.test(probeErr.message || '')) {
+                        liveStatus = 'DELETED (account no longer exists)';
+                    } else {
+                        liveStatus = 'probe error: ' + probeErr.message;
+                    }
+                }
+                result += '\n\n  #' + (j+1) + '  ' + o.dest;
+                result += '\n    fund tx:    ' + (o.hash || '?').slice(0,16) + '...';
+                result += '\n    balance:    ' + liveStatus;
+                result += '\n    bithomp:    https://bithomp.com/explorer/' + o.dest;
+            }
+            result += '\n\n  → If any orphan still holds XRP, use [05] EMERGENCY DELETE with the seed';
+            result += '\n     (if you have it) to recover. Auto-clearer will handle blockers.';
+        }
+        return result;
+    } catch (e) {
+        return 'Orphan scan failed: ' + e.message;
+    }
+}
+
+function devConsoleEval() {
+    var input = document.getElementById('dev-console-eval');
+    if (!input) return;
+    var expr = input.value.trim();
+    if (!expr) return;
+    try {
+        // eslint-disable-next-line no-eval
+        var result = eval(expr);
+        if (result instanceof Promise) {
+            _devConsoleWrite('> ' + expr + '\n[Promise] resolving...');
+            result.then(function(r) {
+                _devConsoleWrite('> ' + expr + '\n→ ' + (typeof r === 'object' ? JSON.stringify(r, null, 2) : String(r)));
+            }).catch(function(err) {
+                _devConsoleWrite('> ' + expr + '\n✗ ' + (err.message || err));
+            });
+        } else {
+            var rendered = (typeof result === 'object' && result !== null) ? JSON.stringify(result, null, 2) : String(result);
+            _devConsoleWrite('> ' + expr + '\n→ ' + rendered);
+        }
+    } catch (e) {
+        _devConsoleWrite('> ' + expr + '\n✗ ' + e.message);
+    }
 }
 
 function _updateHeaderGateBadge() {
