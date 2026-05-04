@@ -612,7 +612,7 @@
     <div id="overlay-elapsed" style="font-family:'Share Tech Mono',monospace;font-size:.7em;color:#88aa88;margin-top:8px;letter-spacing:1px"></div>
     <div id="overlay-stall" style="display:none;margin-top:18px;padding:12px;border:1px solid #ff8844;background:rgba(40,16,0,.6);max-width:340px;text-align:center">
         <div style="font-family:'Orbitron',monospace;color:#ff8844;font-size:.75em;letter-spacing:2px;margin-bottom:8px">&#9888; STALLED</div>
-        <div id="overlay-stall-msg" style="font-size:.7em;color:#ddbb99;line-height:1.5;text-transform:none">No activity for 25s. The network node may be hung. Failover should kick in shortly &mdash; if not, abort to recover.</div>
+        <div id="overlay-stall-msg" style="font-size:.7em;color:#ddbb99;line-height:1.5;text-transform:none">No activity for 45s. The network node may be hung. Failover should kick in shortly &mdash; if not, abort to recover.</div>
     </div>
     <button id="overlay-abort" type="button" onclick="abortCurrentOperation()" style="display:none;margin-top:16px;background:#1a0000;border:2px solid #ff4444;color:#ff4444;font-family:'Orbitron',monospace;font-size:.7em;letter-spacing:2px;padding:10px 22px;cursor:pointer">ABORT &amp; RECOVER</button>
 </div>
@@ -1243,25 +1243,40 @@ function showLoad(m) {
     var stall = document.getElementById('overlay-stall');
     if (txt) txt.textContent = m || 'PROCESSING...';
     if (elapsed) elapsed.textContent = '0s elapsed';
-    if (abortBtn) abortBtn.style.display = 'none';      // appears after 10s
+    if (abortBtn) abortBtn.style.display = 'none';      // appears at 90s OR on stall
     if (stall) stall.style.display = 'none';            // appears after 25s of no log activity
     if (ov) ov.style.display = 'flex';
 
     _overlayWatchdog.startedAt = Date.now();
     _overlayWatchdog.lastLogAt = Date.now();
 
-    // Tick: update elapsed counter every second; reveal abort after 10s.
+    // Tick: update elapsed counter every second.
+    //
+    // ABORT BUTTON VISIBILITY RULES (revised after user feedback that
+    // showing it too early was alarming during normal flow):
+    //   1. Stall watchdog (no log activity for 45s) reveals it + warning panel
+    //   2. Hard fallback at 90s elapsed reveals it silently (no panel)
+    //
+    // Real successful Xaman lock timings (May 3, 8:58 PM):
+    //   - Fund Payment approval: 43s
+    //   - Fund Payment validation: ~52s
+    //   - CheckCreate approval: 40s
+    //   - CheckCash submit: 11s
+    // Total active wait at any one step: ~50–95s. 90s hard threshold sits
+    // at the upper edge of normal so the button only appears when things
+    // are genuinely slow, not during typical Xaman approvals.
     if (_overlayWatchdog.timerId) clearInterval(_overlayWatchdog.timerId);
     _overlayWatchdog.timerId = setInterval(function() {
         var sec = Math.floor((Date.now() - _overlayWatchdog.startedAt) / 1000);
         if (elapsed) elapsed.textContent = sec + 's elapsed';
-        if (sec >= 10 && abortBtn) abortBtn.style.display = 'inline-block';
 
-        // Stall detection: if no log activity for 25s, surface the warning.
-        // It's a heuristic — most operations log progress within a few sec.
+        // Stall detection: surface warning + abort button if no log line
+        // has been written for 45s. Failover should rotate nodes silently
+        // within that window in normal degraded conditions.
         var stallSec = Math.floor((Date.now() - _overlayWatchdog.lastLogAt) / 1000);
-        if (stallSec >= 25 && stall && stall.style.display === 'none') {
+        if (stallSec >= 45 && stall && stall.style.display === 'none') {
             stall.style.display = 'block';
+            if (abortBtn) abortBtn.style.display = 'inline-block';
             var msg = document.getElementById('overlay-stall-msg');
             if (msg) {
                 if (typeof window._currentLockSubWallet !== 'undefined' && window._currentLockSubWallet) {
@@ -1270,6 +1285,14 @@ function showLoad(m) {
                     msg.textContent = 'No activity for ' + stallSec + 's. The network may be hung. Failover should kick in shortly. Tap ABORT to cancel.';
                 }
             }
+        }
+
+        // Hard fallback: at 90s elapsed (regardless of log activity) the
+        // abort button appears quietly, no warning panel. This covers
+        // genuinely slow but quiet operations where the user just wants
+        // an exit option without being alarmed something is broken.
+        if (sec >= 90 && abortBtn && abortBtn.style.display === 'none') {
+            abortBtn.style.display = 'inline-block';
         }
     }, 1000);
 }
@@ -2741,6 +2764,7 @@ async function createEscrow() {
         sub = xrpl.Wallet.generate();
         savedSubSeed = sub.seed;
         lg('Sub-wallet generated: ' + truncAddr(sub.address), 'inf');
+        xrpmanNarrate('lock-subwallet');
 
         // Register the in-flight sub-wallet so the ABORT button on the
         // loading overlay can surface its seed if the user aborts before
@@ -2768,6 +2792,7 @@ async function createEscrow() {
 
         showLoad('FUNDING SUB-WALLET (1.5 XRP)...');
         lg('Sending 1.5 XRP to activate sub-wallet...', 'inf');
+        xrpmanNarrate('lock-fund-request');
         var fundTx = {
             TransactionType: 'Payment',
             Account: wallet.address,
@@ -2838,6 +2863,7 @@ async function createEscrow() {
         // Step 2: Create Check
         showLoad('CREATING TOKEN CHECK...');
         lg('Creating check for ' + amount + ' ' + curInput + '...', 'inf');
+        xrpmanNarrate('lock-check-request');
         var checkTx = {
             TransactionType: 'CheckCreate',
             Account: wallet.address,
@@ -2940,6 +2966,7 @@ async function createEscrow() {
         // Step 3: Sub-wallet cashes the check
         showLoad('CASHING CHECK (AUTO-TRUST)...');
         lg('Sub-wallet cashing check...', 'inf');
+        xrpmanNarrate('lock-cash-start');
         var cashTx = await subWalletAutofill(c, sub, {
             TransactionType: 'CheckCash',
             Account: sub.address,
@@ -2963,10 +2990,12 @@ async function createEscrow() {
         // [9.3] CheckCash tx hash
         var cashHash = cashRes.result.hash || cashRes.result.tx_json && cashRes.result.tx_json.hash || '';
         lg('Tokens secured in sub-wallet. TX: ' + (cashHash || 'N/A'), 'succ');
+        xrpmanNarrate('lock-cash-done');
 
         // Step 4: Encrypt sub-wallet seed
         showLoad('ENCRYPTING VAULT (ARGON2ID)...');
         lg('Encrypting sub-wallet seed with Argon2id + AES-256-GCM...', 'inf');
+        xrpmanNarrate('lock-encrypt');
         var enc = await encryptSeed(sub.seed, adminPw, userPw);
 
         // Step 5: Ledger time for lock
@@ -3018,6 +3047,7 @@ async function createEscrow() {
         localStorage.setItem(STORE_KEY, JSON.stringify(escrows));
 
         lg('ESCROW LOCKED! ID: ' + escrow.id, 'succ');
+        xrpmanNarrate('lock-saved');
         lg('Sub-wallet: ' + truncAddr(sub.address) + ' | Unlock: ' + unlockDate.toLocaleString(), 'inf');
         lg('Seed encrypted with dual-password Argon2id. Stored in vault.', 'succ');
 
@@ -3074,6 +3104,7 @@ async function createEscrow() {
                 : '\u2022'.repeat(savedSubSeed.length);
 
             lg('--- RECOVERY: SUB-WALLET WAS FUNDED ---', 'err');
+            xrpmanNarrate('lock-failed');
             lg('The escrow process failed but the sub-wallet may have received XRP.', 'err');
             lg('Address: ' + sub.address, 'inf');
             lg('Seed (masked): ' + maskedSeed, 'inf');
@@ -3100,6 +3131,7 @@ async function createEscrow() {
         // surface this sub-wallet's seed (regardless of success/failure
         // outcome above; failure path already wrote its own recovery).
         try { window._currentLockSubWallet = null; } catch(_) {}
+        try { xrpmanResumeIdle(); } catch(_) {}
         hideLoad();
     }
 }
@@ -5118,8 +5150,57 @@ var XRPMAN_REACTIONS = {
     'gate-fail':   ['Gate closed. Unlock payment required.', 'Access denied. See the dev panel for details.'],
     'dev-open':    ['Dev panel engaged. Classified settings, Commander.', 'Owner mode active. Tread carefully.'],
     'config-sync': ['Config synced from GitHub. Prices locked in.', 'Remote config refreshed, Commander.', 'Fresh config from the repo. Standing by.'],
-    'config-publish': ['Shipped to GitHub, Commander. Nice work.', 'Config committed. Every instance gets the update.', 'Pushed. The whole network just got the memo.']
+    'config-publish': ['Shipped to GitHub, Commander. Nice work.', 'Config committed. Every instance gets the update.', 'Pushed. The whole network just got the memo.'],
+
+    // ════════════════════════════════════════════════════════════════
+    // LOCK PIPELINE NARRATION — fired at each step of the create flow
+    // so the assistant strip stays alive during the long Xaman waits.
+    // Without this, the user sees a static spinner for 30–90s per step
+    // and assumes things have stalled. The narration tells them what
+    // the app is doing in plain language.
+    // ════════════════════════════════════════════════════════════════
+    'lock-subwallet':    ['Sub-wallet keypair generated. Your private vault address is ready.', 'New escrow address minted, Commander.', 'Fresh sub-wallet in hand. Standing by for funding.'],
+    'lock-fund-request': ['Asking Xaman to fund the sub-wallet with 1.5 XRP. Tap to approve.', 'Push notification sent to your phone — approve the funding payment.', 'Xaman wants 1.5 XRP for the new vault. Your move, Commander.'],
+    'lock-fund-signed':  ['Funding signed. Waiting for the network to confirm.', 'Xaman dispatched the payment. Validating now.', 'Signed and submitted. The ledger is processing.'],
+    'lock-fund-done':    ['Sub-wallet funded and live on the ledger.', 'Vault has its XRP reserve. Moving to step two.', 'Funding confirmed. Onward, Commander.'],
+    'lock-check-request':['Now creating the token Check. Tap Xaman to approve.', 'Step two: token Check creation. Approve in Xaman.', 'Building the bridge for your tokens. Need a signature.'],
+    'lock-check-signed': ['Check created. Computing CheckID locally.', 'Token Check signed. Deriving the ID without waiting on metadata.', 'Check on the books. Skipping the metadata wait.'],
+    'lock-check-done':   ['Token Check is real. Sub-wallet about to cash it.', 'Check ID locked in. Sub-wallet takes over from here.', 'Token bridge built. Sealing it now.'],
+    'lock-cash-start':   ['Sub-wallet is cashing the Check. No Xaman approval needed for this one.', 'Internal signing. The vault closes itself.', 'Final step: tokens transferring into the vault.'],
+    'lock-cash-done':    ['Tokens secured inside the sub-wallet. Encrypting the seed now.', 'Vault has its tokens. Argon2id is sealing the keys.', 'Tokens home. Cryptography taking it from here.'],
+    'lock-encrypt':      ['Sealing the seed with Argon2id + AES-256-GCM. Both passwords required to ever open it.', 'Dual-password encryption running. ~1 second.', 'Locking the vault behind your two passwords.'],
+    'lock-saved':        ['Escrow record saved to local storage. We are done.', 'Vault registered. Receipt incoming.', 'All steps complete. Look at that green text.'],
+    'lock-failed':       ['Something tripped during the lock. Check the BLACK BOX log.', 'Pipeline failure. Recovery info should be in the log.', 'Did not complete. Sub-wallet may still hold funds — see [05].'],
+
+    // Emergency delete and auto-clear narration
+    'delete-blockers':   ['Found objects in the way. Auto-clearing them now.', 'Cleanup pass running. Trustlines and Checks getting cancelled.', 'Hold on, Commander — clearing blockers first.'],
+    'delete-clearing':   ['Cancelling Check.', 'Sweeping tokens to primary.', 'Closing trustline.', 'Removing the obstruction.'],
+    'delete-retry':      ['Blockers cleared. Retrying AccountDelete.', 'Path is open. Going for the delete again.', 'Round two on the recovery, Commander.']
 };
+
+// Speak a specific lock-pipeline reaction. Resets the assistant rotation
+// timer so the same line stays visible until the next narration step
+// (instead of being replaced by an idle-pool line mid-flow).
+function xrpmanNarrate(key) {
+    var lines = XRPMAN_REACTIONS[key];
+    if (!lines || lines.length === 0) return;
+    var pick = lines[Math.floor(Math.random() * lines.length)];
+    if (!pick) return;
+    try {
+        showXrpmanLine(pick);
+        // Suppress the idle rotator while the lock flow is talking — we
+        // don't want "Tip: testnet first" appearing mid-Xaman-approval.
+        if (_xrpmanTimer) { clearInterval(_xrpmanTimer); _xrpmanTimer = null; }
+    } catch(_) {}
+}
+
+// Re-arm the idle rotator when the lock flow ends. Caller invokes this
+// in finally{} so the assistant returns to its normal banter pool.
+function xrpmanResumeIdle() {
+    try {
+        if (typeof _xrpmanKickRotate === 'function') _xrpmanKickRotate();
+    } catch(_) {}
+}
 
 window._xrpmanReact = function(key) {
     try {
