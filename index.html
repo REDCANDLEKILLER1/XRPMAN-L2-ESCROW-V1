@@ -2576,79 +2576,6 @@ async function createEscrow() {
             throw new Error('Generated sub-wallet address collides with primary wallet. Retry.');
         }
 
-        // ════════════════════════════════════════════════════════════════
-        //   PRE-FLIGHT SEED RESCUE — runs BEFORE any network activity
-        // ════════════════════════════════════════════════════════════════
-        // This gate exists because of a fatal failure mode discovered in the
-        // wild: if the lock pipeline hangs forever (e.g. xrplcluster.com
-        // times out on submit) and the user force-quits the tab, the seed
-        // never surfaces. The recovery block at the bottom only fires on
-        // thrown errors, not on user-cancelled hangs.
-        //
-        // The fix: write the seed to a persistent storage key BEFORE we
-        // touch the network at all, AND show it in a confirm dialog the
-        // user must explicitly acknowledge. Even if the entire app crashes
-        // a millisecond from now, the seed survives in localStorage.
-        try {
-            // Backup #1: persistent localStorage stash, indexed by address.
-            // This survives tab close, crash, force-quit, OS restart.
-            var stash = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
-            stash[sub.address] = {
-                seed: sub.seed,
-                createdAt: Date.now(),
-                primary: wallet.address,
-                network: NET
-            };
-            localStorage.setItem('xrpman_subwallet_stash', JSON.stringify(stash));
-            lg('Seed saved to local stash (key: xrpman_subwallet_stash). Survives tab close.', 'inf');
-        } catch (stashErr) {
-            lg('WARNING: could not save seed to local stash: ' + stashErr.message, 'err');
-        }
-
-        // Backup #2: hand the user the seed RIGHT NOW with a hard
-        // confirmation gate. They must copy it to their password manager
-        // before the lock proceeds. If they cancel, we abort cleanly with
-        // no funds at risk (no fund payment has fired yet).
-        hideLoad();
-        var ack = confirm(
-            'SUB-WALLET CREATED — SAVE SEED FIRST\n\n' +
-            'Address:\n' + sub.address + '\n\n' +
-            'RECOVERY SEED (copy this NOW):\n' + sub.seed + '\n\n' +
-            '\u26a0 If anything goes wrong during the lock, this seed is the ONLY way to recover the 1.5 XRP and any tokens.\n\n' +
-            'Press OK to copy the seed to your clipboard and continue.\n' +
-            'Press CANCEL to abort the lock (no funds at risk yet).'
-        );
-
-        if (!ack) {
-            lg('User cancelled at seed pre-flight. No funds were sent. Sub-wallet discarded.', 'inf');
-            // Remove the unused stash entry — sub-wallet was never funded.
-            try {
-                var s = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
-                delete s[sub.address];
-                localStorage.setItem('xrpman_subwallet_stash', JSON.stringify(s));
-            } catch(_) {}
-            return;
-        }
-
-        // Copy seed to clipboard so user has zero-friction paste into pw manager.
-        try {
-            await navigator.clipboard.writeText(sub.seed);
-            lg('Seed copied to clipboard. Paste it into your password manager NOW. Clipboard will be cleared in 60s.', 'succ');
-            // Clipboard hygiene — auto-clear after 60s so the seed doesn't
-            // sit there indefinitely waiting to be accidentally pasted.
-            setTimeout(function() {
-                navigator.clipboard.writeText('').catch(function(){});
-            }, 60000);
-        } catch (clipErr) {
-            lg('Could not auto-copy seed to clipboard. Use the address above to find it manually if needed.', 'err');
-        }
-
-        showLoad('FUNDING SUB-WALLET (1.5 XRP)...');
-        // ════════════════════════════════════════════════════════════════
-        //   END PRE-FLIGHT — seed is now safe in 3 places (browser memory,
-        //   localStorage stash, user's clipboard/password manager).
-        // ════════════════════════════════════════════════════════════════
-
         // Step 1: Fund sub-wallet
         // Build the lock-proof memo once and attach to all 3 lock transactions
         // so it appears on the primary's history, the CheckCreate, and the vault's CheckCash.
@@ -2662,6 +2589,7 @@ async function createEscrow() {
         });
         lg('Memo attached to lock txs: ' + memoBundle.text, 'inf');
 
+        showLoad('FUNDING SUB-WALLET (1.5 XRP)...');
         lg('Sending 1.5 XRP to activate sub-wallet...', 'inf');
         var fundTx = {
             TransactionType: 'Payment',
@@ -2865,8 +2793,25 @@ async function createEscrow() {
         var enc = await encryptSeed(sub.seed, adminPw, userPw);
 
         // Step 5: Ledger time for lock
-        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
-        var currentLedgerTime = ledgerResp.result.ledger.close_time;
+        // CRITICAL: this single read used to use raw c.request — when
+        // xrplcluster hangs HERE (after the lock has fully validated), it
+        // crashed the save and the user saw an "ESCROW FAILED" recovery
+        // prompt despite the tokens actually being secured. Wrapped with
+        // requestWithRetry so a hung node rotates instead of killing the
+        // save. Hard fallback: if every node hangs, estimate close_time
+        // from local clock (XRPL ripple-epoch math). close_time drifts
+        // <5s from real time so the unlock check is unaffected.
+        var currentLedgerTime;
+        try {
+            var ledgerResp = await requestWithRetry(
+                { command: 'ledger', ledger_index: 'validated' },
+                { attempts: 4, timeout: 8000, label: 'post-lock ledger close_time' }
+            );
+            currentLedgerTime = ledgerResp.result.ledger.close_time;
+        } catch (ledgerErr) {
+            currentLedgerTime = Math.floor(Date.now() / 1000) - 946684800;
+            lg('Ledger close_time fetch failed on all nodes; using local-clock estimate (within ~5s). Lock proceeding.', 'inf');
+        }
         var lockSeconds = Math.floor((unlockDate.getTime() - Date.now()) / 1000);
         var unlockLedgerTime = currentLedgerTime + lockSeconds;
 
@@ -2978,28 +2923,15 @@ async function createEscrow() {
     }
 }
 
-// Reveal & copy a stashed recovery seed. Checks two sources: (1) the
-// in-memory pool which only persists for the current page session, and
-// (2) the localStorage stash 'xrpman_subwallet_stash' which survives tab
-// close, browser crash, OS restart. Does NOT log the raw seed — only
-// writes to clipboard with a brief on-screen confirmation.
+// Reveal & copy a stashed recovery seed exactly once. Exposed on window so
+// users can run it from console even if the alert flow was dismissed. Does
+// NOT log the raw seed — only writes to clipboard with a brief on-screen
+// confirmation that auto-clears.
 function xrpmanRevealSeed(address) {
-    // Try in-memory pool first
     var pool = window._xrpmanRecoverySeeds || {};
     var seed = pool[address];
-
-    // Fall back to persistent localStorage stash
     if (!seed) {
-        try {
-            var stash = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
-            if (stash[address] && stash[address].seed) {
-                seed = stash[address].seed;
-            }
-        } catch(_) {}
-    }
-
-    if (!seed) {
-        alert('No recovery seed found for ' + address + '.\n\nChecked:\n  - in-memory pool (cleared on reload)\n  - localStorage stash key xrpman_subwallet_stash\n\nIf you exported the seed earlier, it should be in your password manager.');
+        alert('No recovery seed stashed for ' + address + '. (Seeds are cleared on page reload.)');
         return;
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -3011,46 +2943,6 @@ function xrpmanRevealSeed(address) {
         });
     } else {
         window.prompt('Recovery seed (copy now, do NOT screenshot):', seed);
-    }
-}
-
-// List every sub-wallet seed currently in the persistent stash. Lets the
-// user audit what's saved. Output goes to the log as addresses only.
-function xrpmanListStashedSeeds() {
-    try {
-        var stash = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
-        var addrs = Object.keys(stash);
-        if (addrs.length === 0) {
-            lg('No seeds in local stash.', 'inf');
-            return [];
-        }
-        lg('=== STASHED SUB-WALLET SEEDS (' + addrs.length + ') ===', 'inf');
-        addrs.forEach(function(a) {
-            var entry = stash[a];
-            var ageH = ((Date.now() - (entry.createdAt || 0)) / 3600000).toFixed(1);
-            lg('  ' + a + ' [' + (entry.network || '?') + '] ' + ageH + 'h old. Reveal: xrpmanRevealSeed("' + a + '")', 'inf');
-        });
-        return addrs;
-    } catch (e) {
-        lg('Could not read stash: ' + e.message, 'err');
-        return [];
-    }
-}
-
-// Remove a stashed seed once the sub-wallet has been recovered/deleted.
-// Call this manually after the AccountDelete completes successfully.
-function xrpmanClearStashedSeed(address) {
-    try {
-        var stash = JSON.parse(localStorage.getItem('xrpman_subwallet_stash') || '{}');
-        if (stash[address]) {
-            delete stash[address];
-            localStorage.setItem('xrpman_subwallet_stash', JSON.stringify(stash));
-            lg('Stashed seed for ' + address.slice(0,8) + '... cleared.', 'succ');
-        } else {
-            lg('No stashed seed found for ' + address, 'inf');
-        }
-    } catch (e) {
-        lg('Could not clear stash entry: ' + e.message, 'err');
     }
 }
 
@@ -3249,8 +3141,18 @@ async function runResumePending(pending, userPw, adminPw) {
         lg('Tokens secured. TX: ' + (cashHash || 'N/A'), 'succ');
 
         // Step 4: Compute lock ledger time, save real escrow record
-        var ledgerResp = await c.request({ command: 'ledger', ledger_index: 'validated' });
-        var currentLedgerTime = ledgerResp.result.ledger.close_time;
+        // Same hardening as the main flow — see comment in main create flow.
+        var currentLedgerTime;
+        try {
+            var ledgerResp = await requestWithRetry(
+                { command: 'ledger', ledger_index: 'validated' },
+                { attempts: 4, timeout: 8000, label: 'resume-lock ledger close_time' }
+            );
+            currentLedgerTime = ledgerResp.result.ledger.close_time;
+        } catch (ledgerErr) {
+            currentLedgerTime = Math.floor(Date.now() / 1000) - 946684800;
+            lg('Ledger close_time fetch failed on all nodes; using local-clock estimate. Resume proceeding.', 'inf');
+        }
         var lockSeconds = Math.floor((pending.unlockDateMs - Date.now()) / 1000);
         var unlockLedgerTime = currentLedgerTime + lockSeconds;
 
